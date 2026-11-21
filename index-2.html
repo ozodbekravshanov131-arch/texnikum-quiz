@@ -1,0 +1,1736 @@
+<!DOCTYPE html>
+<!--
+  ════════════════════════════════════════════════════════════════════════
+  Texnikum Quiz — Kahoot uslubidagi real vaqt viktorinasi (bitta HTML fayl)
+  ════════════════════════════════════════════════════════════════════════
+
+  FIREBASE REALTIME DATABASE QOIDALARI (production uchun tavsiya):
+
+  {
+    "rules": {
+      "subjects": {
+        ".read": true,
+        ".write": true          // DEMO uchun. Production: "auth != null"
+      },                        // yoki fanlarni faqat konsoldan boshqaring
+      "rooms": {
+        ".read": true,
+        ".write": true,         // DEMO uchun. Production: "auth != null"
+        "$pin": {
+          ".validate": "newData.hasChildren(['status', 'createdAt'])",
+          "status": { ".validate": "newData.isString() && newData.val().length <= 16" },
+          "currentQuestion": { ".validate": "newData.isNumber()" },
+          "players": {
+            "$playerId": {
+              ".validate": "newData.hasChildren(['name', 'group'])",
+              "name":  { ".validate": "newData.isString() && newData.val().length <= 40" },
+              "group": { ".validate": "newData.isString() && newData.val().length <= 40" },
+              "score": { ".validate": "newData.isNumber() && newData.val() >= 0" }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  Izohlar:
+  - Yuqoridagi qoidalar ochiq demo uchun. Haqiqiy himoya uchun Firebase
+    Authentication va aniqroq ".validate" qoidalari ishlating.
+  - Oʻquvchilar savollarni "rooms" tugunidan oʻqiydi (mahalliy rejim talabi).
+    Toʻliq xavfsizlik uchun savollarni bulut funksiyalari orqali uzatish tavsiya etiladi.
+  - MUHIM: Admin paroli ("admin123") FAQAT MIJOZ TOMONIDA TEKSHIRILADI — u
+    faqat interfeysni yashiradi va HAQIQIY xavfsizlik vositasi EMAS.
+-->
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texnikum Quiz — Jonli viktorina</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%BF%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = { theme: { extend: { fontFamily: { sans: ['Nunito','system-ui','-apple-system','Segoe UI','sans-serif'] } } } };
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  @keyframes popin { from { opacity:0; transform: scale(.96) translateY(6px); } to { opacity:1; transform:none; } }
+  .pop-in { animation: popin .22s ease both; }
+  @keyframes toastin { from { opacity:0; transform: translateX(16px); } to { opacity:1; transform:none; } }
+  .toast-in { animation: toastin .25s ease both; }
+  .tab-active { background:#10B981 !important; color:#fff !important; }
+  .nice-scroll::-webkit-scrollbar { width:8px; height:8px; }
+  .nice-scroll::-webkit-scrollbar-thumb { background:#A7F3D0; border-radius:8px; }
+  .nice-scroll::-webkit-scrollbar-track { background:#ECFDF5; }
+</style>
+</head>
+<body class="bg-[#F0FDF4] min-h-screen font-sans text-gray-800 antialiased">
+
+  <!-- Aloqa holati banneri -->
+  <div id="connBanner" class="hidden fixed top-0 inset-x-0 z-[60] bg-amber-500 text-white text-center text-sm font-bold py-1.5 shadow-md">Aloqa uzildi. Qayta ulanmoqda...</div>
+
+  <!-- Navbar -->
+  <nav class="bg-[#065F46] text-white shadow-lg sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+      <button id="navLogo" class="flex items-center gap-2 text-xl font-black tracking-tight">🌿 Texnikum Quiz</button>
+      <div class="hidden md:flex items-center gap-2">
+        <button id="navHome" class="nav-tab px-4 py-2 rounded-xl font-bold hover:bg-white/10 transition-colors">Oʻyinga kirish</button>
+        <button id="navAdmin" class="nav-tab px-4 py-2 rounded-xl font-bold hover:bg-white/10 transition-colors">Admin Panel</button>
+      </div>
+      <button id="burgerBtn" class="md:hidden p-2 rounded-lg hover:bg-white/10 transition-colors" aria-label="Menyu">
+        <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+    <div id="navLinks" class="hidden md:hidden border-t border-white/10 px-4 py-3 flex flex-col gap-2">
+      <button id="navHomeM" class="nav-tab px-4 py-3 rounded-xl font-bold hover:bg-white/10 transition-colors text-left">Oʻyinga kirish</button>
+      <button id="navAdminM" class="nav-tab px-4 py-3 rounded-xl font-bold hover:bg-white/10 transition-colors text-left">Admin Panel</button>
+    </div>
+  </nav>
+
+  <main class="max-w-7xl mx-auto px-4 py-8">
+
+    <!-- ══════════ EKRAN 1: OʻQUVCHI KIRISH ══════════ -->
+    <section id="view-home" class="app-view">
+      <div class="max-w-xl mx-auto">
+        <div class="rounded-3xl bg-gradient-to-br from-[#065F46] via-[#059669] to-[#10B981] p-1.5 shadow-2xl">
+          <div class="rounded-[20px] bg-white/10 backdrop-blur p-6 md:p-8">
+            <h1 class="text-3xl md:text-4xl font-black text-white text-center">🌿 Oʻyinga kirish</h1>
+            <p class="text-emerald-50 text-center font-semibold mt-2">Oʻqituvchi bergan PIN-kodni kiriting va oʻyinga qoʻshiling</p>
+            <div class="mt-6 space-y-4">
+              <div>
+                <label for="inpPin" class="block text-emerald-50 font-bold text-sm mb-1.5">Xona PIN-kodi</label>
+                <input id="inpPin" type="text" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="6 raqamli PIN-kod"
+                  class="w-full h-14 rounded-2xl px-4 text-center text-2xl font-black tracking-[0.35em] text-gray-800 bg-white placeholder:text-gray-400 placeholder:tracking-normal placeholder:text-base placeholder:font-semibold placeholder:text-center outline-none focus:ring-4 focus:ring-yellow-300 transition">
+              </div>
+              <div>
+                <label for="inpName" class="block text-emerald-50 font-bold text-sm mb-1.5">Ism-familiya</label>
+                <input id="inpName" type="text" autocomplete="off" maxlength="40" placeholder="Ismingiz va familiyangiz"
+                  class="w-full h-14 rounded-2xl px-4 text-lg font-bold text-gray-800 bg-white placeholder:text-gray-400 placeholder:font-semibold outline-none focus:ring-4 focus:ring-yellow-300 transition">
+              </div>
+              <div>
+                <label for="inpGroup" class="block text-emerald-50 font-bold text-sm mb-1.5">Guruh nomi (masalan, 104-guruh)</label>
+                <input id="inpGroup" type="text" autocomplete="off" maxlength="40" placeholder="104-guruh"
+                  class="w-full h-14 rounded-2xl px-4 text-lg font-bold text-gray-800 bg-white placeholder:text-gray-400 placeholder:font-semibold outline-none focus:ring-4 focus:ring-yellow-300 transition">
+              </div>
+              <button id="btnJoin" class="w-full h-16 rounded-2xl bg-yellow-400 hover:bg-yellow-300 active:scale-[0.98] text-emerald-950 text-2xl font-black shadow-lg transition-all">Kirish</button>
+            </div>
+          </div>
+        </div>
+        <div class="mt-6 grid grid-cols-3 gap-3">
+          <div class="bg-white rounded-2xl shadow-md p-4 text-center"><div class="text-2xl">🔑</div><div class="mt-1 text-xs font-bold text-gray-600 leading-snug">1. PIN-kodni kiriting</div></div>
+          <div class="bg-white rounded-2xl shadow-md p-4 text-center"><div class="text-2xl">✍️</div><div class="mt-1 text-xs font-bold text-gray-600 leading-snug">2. Ism va guruhingizni yozing</div></div>
+          <div class="bg-white rounded-2xl shadow-md p-4 text-center"><div class="text-2xl">⚡</div><div class="mt-1 text-xs font-bold text-gray-600 leading-snug">3. Tez javob bering — ball oling</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ EKRAN 2: ADMIN PANEL ══════════ -->
+    <section id="view-admin" class="app-view hidden">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <h1 class="text-3xl font-black text-emerald-900">⚙️ Admin Panel</h1>
+        <button id="btnAdminLogout" class="px-4 py-2.5 rounded-xl bg-white text-red-600 font-bold border border-red-200 hover:bg-red-50 transition-colors shadow-sm">Chiqish</button>
+      </div>
+
+      <div class="grid md:grid-cols-3 gap-4">
+        <button id="btnBulkOpen" class="rounded-3xl p-6 text-left text-white shadow-lg bg-gradient-to-br from-orange-500 to-red-500 hover:shadow-2xl hover:-translate-y-0.5 active:scale-[0.99] transition-all">
+          <div class="text-4xl">📥</div>
+          <div class="mt-2 text-xl font-black leading-tight">JSON dan ommaviy yuklash</div>
+          <div class="text-white/85 text-sm font-semibold mt-1">Yuzlab savollarni bir martada yuklang</div>
+        </button>
+        <button id="btnAddQOpen" class="rounded-3xl p-6 text-left text-white shadow-lg bg-gradient-to-br from-emerald-700 to-[#065F46] hover:shadow-2xl hover:-translate-y-0.5 active:scale-[0.99] transition-all">
+          <div class="text-4xl">➕</div>
+          <div class="mt-2 text-xl font-black leading-tight">+ Yangi savol qoʻshish</div>
+          <div class="text-white/85 text-sm font-semibold mt-1">Bitta savolni qoʻlda kiriting</div>
+        </button>
+        <button id="btnLiveOpen" class="rounded-3xl p-6 text-left text-white shadow-lg bg-gradient-to-br from-purple-600 to-fuchsia-600 hover:shadow-2xl hover:-translate-y-0.5 active:scale-[0.99] transition-all">
+          <div class="text-4xl">🎮</div>
+          <div class="mt-2 text-xl font-black leading-tight">Jonli Xona Ochish (Live Host)</div>
+          <div class="text-white/85 text-sm font-semibold mt-1">Real vaqt oʻyinini boshlang</div>
+        </button>
+      </div>
+
+      <h2 class="text-2xl font-black text-emerald-900 mt-10 mb-4">📚 Fanlar katalogi</h2>
+      <div id="subjectGrid" class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+
+      <h2 class="text-2xl font-black text-emerald-900 mt-10 mb-4">🗂 Mening xonalarim</h2>
+      <div id="myRoomsList" class="space-y-3"></div>
+    </section>
+
+    <!-- ══════════ EKRAN 3: OʻQITUVCHI — KUTISH ZALI / SAVOL / NATIJA ══════════ -->
+    <section id="view-hostzone" class="app-view hidden">
+
+      <div id="hzLobby" class="hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
+          <button id="btnBackToAdmin" class="px-4 py-2.5 rounded-xl bg-white font-bold text-emerald-800 border border-emerald-200 hover:bg-emerald-50 transition-colors shadow-sm">← Panelga qaytish</button>
+          <div class="font-bold text-gray-600">Fan: <span id="lobbySubject" class="text-emerald-800"></span></div>
+        </div>
+        <div class="rounded-3xl bg-gradient-to-br from-[#065F46] to-[#10B981] p-8 md:p-10 text-center text-white shadow-2xl">
+          <div class="text-2xl font-black tracking-wide">Kutish zali</div>
+          <div class="mt-3 text-xs font-bold uppercase tracking-[0.3em] text-emerald-100">Xona PIN-kodi</div>
+          <div id="lobbyPin" class="mt-1 text-6xl md:text-8xl font-black tracking-[0.15em] drop-shadow">000000</div>
+          <div class="mt-4 text-emerald-50 font-bold">Qoʻshilish uchun saytga kiring va PIN-kodni kiriting</div>
+        </div>
+        <div class="mt-6 text-center">
+          <span class="inline-block bg-white rounded-2xl shadow-md px-6 py-3 text-2xl font-black text-emerald-900"><span id="lobbyCount">0</span> ta oʻquvchi qoʻshildi</span>
+        </div>
+        <div id="lobbyPlayers" class="mt-4 grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3"></div>
+        <div class="mt-8 text-center">
+          <button id="btnStartGame" disabled class="px-12 h-16 rounded-2xl bg-[#10B981] hover:bg-emerald-500 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed text-white text-2xl font-black shadow-xl transition-all">Oʻyinni boshlash</button>
+        </div>
+      </div>
+
+      <div id="hzQuestion" class="hidden">
+        <div class="flex flex-wrap items-center gap-4 justify-between bg-white rounded-2xl shadow-md px-5 py-3">
+          <span id="hqIdx" class="font-extrabold text-emerald-900 text-lg"></span>
+          <div class="flex items-center gap-3 flex-1 min-w-[220px]">
+            <div id="hqTimer" class="w-14 h-14 shrink-0 rounded-2xl bg-[#065F46] text-white flex items-center justify-center text-2xl font-black">20</div>
+            <div class="flex-1 h-4 bg-emerald-100 rounded-full overflow-hidden"><div id="hqTimerBar" class="h-full bg-[#10B981] transition-[width] duration-300" style="width:100%"></div></div>
+          </div>
+        </div>
+        <h2 id="hqText" class="mt-6 text-3xl md:text-5xl font-black text-center text-gray-900 leading-snug"></h2>
+        <div class="mt-5 max-w-xl mx-auto">
+          <div id="hqCounter" class="text-center text-xl font-extrabold text-gray-700">0 / 0 javob berdi</div>
+          <div class="mt-2 h-5 bg-emerald-100 rounded-full overflow-hidden"><div id="hqProgress" class="h-full bg-gradient-to-r from-[#065F46] to-[#10B981] transition-[width] duration-300" style="width:0%"></div></div>
+        </div>
+        <div id="hqOptions" class="mt-7 grid md:grid-cols-2 gap-4"></div>
+      </div>
+
+      <div id="hzReveal" class="hidden">
+        <div class="text-center text-lg font-black text-purple-700 uppercase tracking-widest">Javob eʼlon qilindi</div>
+        <h2 id="hrText" class="mt-2 text-3xl md:text-4xl font-black text-center text-gray-900 leading-snug"></h2>
+        <div id="hrOptions" class="mt-6 grid md:grid-cols-2 gap-4"></div>
+        <div class="grid md:grid-cols-2 gap-4 mt-6 items-stretch">
+          <div class="bg-white rounded-3xl p-5 shadow-lg">
+            <h3 class="font-black text-lg text-emerald-900 mb-3">🏆 Top 5</h3>
+            <div id="hrTop" class="space-y-2"></div>
+          </div>
+          <div class="bg-white rounded-3xl p-5 shadow-lg flex flex-col justify-end gap-3">
+            <button id="btnNextQ" class="h-14 rounded-2xl bg-[#10B981] text-white text-xl font-black hover:bg-emerald-500 transition-colors">Keyingi savol</button>
+            <button id="btnFinishEarly" class="h-12 rounded-2xl bg-white border-2 border-red-200 text-red-600 font-black hover:bg-red-50 transition-colors">Oʻyinni yakunlash</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="hzFinish" class="hidden">
+        <h1 class="text-4xl font-black text-center text-emerald-900">🏆 Natijalar</h1>
+        <div class="text-center font-bold text-gray-500 mt-1"><span id="finSubject"></span> • PIN: <span id="finPin" class="font-mono"></span></div>
+        <div class="relative mt-6">
+          <canvas id="confettiCanvas" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+          <div id="podium" class="flex items-end gap-3 max-w-2xl mx-auto px-4 min-h-[320px]"></div>
+        </div>
+        <div class="mt-8 bg-white rounded-3xl shadow-lg overflow-x-auto max-w-3xl mx-auto">
+          <table class="w-full text-left min-w-[520px]">
+            <thead class="bg-[#065F46] text-white">
+              <tr>
+                <th class="px-4 py-3 font-black">Oʻrin</th>
+                <th class="px-4 py-3 font-black">Ism-familiya</th>
+                <th class="px-4 py-3 font-black">Guruh</th>
+                <th class="px-4 py-3 font-black">Ball</th>
+                <th class="px-4 py-3 font-black">Toʻgʻri javoblar</th>
+              </tr>
+            </thead>
+            <tbody id="finTable" class="divide-y divide-gray-100"></tbody>
+          </table>
+        </div>
+        <div class="mt-6 flex flex-wrap justify-center gap-3">
+          <button id="btnCsvAdmin" class="px-6 h-13 rounded-2xl bg-emerald-600 text-white font-black text-lg hover:bg-emerald-700 transition-colors shadow-md" style="height:3.25rem">📥 Excel (CSV) yuklab olish</button>
+          <button id="btnNewGame" class="px-6 rounded-2xl bg-white border-2 border-emerald-200 text-emerald-800 font-black text-lg hover:bg-emerald-50 transition-colors shadow-sm" style="height:3.25rem">🔄 Yangi oʻyin</button>
+          <button id="btnHomeAdmin" class="px-6 rounded-2xl bg-[#065F46] text-white font-black text-lg hover:bg-emerald-800 transition-colors shadow-sm" style="height:3.25rem">🏠 Bosh sahifa</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ EKRAN 4: OʻQUVCHI OʻYINI ══════════ -->
+    <section id="view-sgame" class="app-view hidden">
+
+      <div id="sgWaiting" class="hidden max-w-md mx-auto text-center">
+        <div class="rounded-3xl bg-gradient-to-br from-[#065F46] to-[#10B981] p-8 text-white shadow-2xl pop-in">
+          <div class="text-xl font-black">Kutish zali</div>
+          <div class="mt-2 text-xs font-bold uppercase tracking-[0.3em] text-emerald-100">Xona PIN-kodi</div>
+          <div id="swPin" class="text-5xl font-black tracking-[0.15em] mt-1"></div>
+          <div class="mt-4 font-bold text-emerald-50">Oʻyin tez orada boshlanadi. Tayyorlanib turing!</div>
+          <div class="mt-5 w-8 h-8 mx-auto border-4 border-white/40 border-t-white rounded-full animate-spin"></div>
+        </div>
+        <div class="mt-4 bg-white rounded-2xl shadow px-4 py-3 font-bold text-gray-700">Siz: <span id="swName"></span> • <span id="swGroup" class="text-gray-500"></span></div>
+        <div class="mt-2 text-gray-500 font-semibold text-sm" id="swCount"></div>
+      </div>
+
+      <div id="sgQuestion" class="hidden max-w-3xl mx-auto">
+        <div class="flex items-center justify-between gap-3">
+          <span id="sqIdx" class="font-extrabold text-emerald-900 text-lg"></span>
+          <div class="relative w-14 h-14 shrink-0">
+            <svg class="w-14 h-14 -rotate-90" viewBox="0 0 60 60">
+              <circle cx="30" cy="30" r="26" fill="none" stroke="#A7F3D0" stroke-width="6"/>
+              <circle id="sqRingFg" cx="30" cy="30" r="26" fill="none" stroke="#059669" stroke-width="6" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/>
+            </svg>
+            <div id="sqTimerNum" class="absolute inset-0 flex items-center justify-center font-black text-emerald-900 text-lg">20</div>
+          </div>
+        </div>
+        <h2 id="sqText" class="mt-4 text-2xl md:text-4xl font-black text-center text-gray-900 leading-snug"></h2>
+        <div id="sqButtons" class="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 md:gap-4"></div>
+        <div id="sqMsg" class="hidden mt-5 rounded-2xl bg-blue-50 border border-blue-200 text-blue-800 font-bold text-center px-4 py-3.5">
+          <span class="inline-block w-4 h-4 mr-2 border-2 border-blue-500 border-t-transparent rounded-full animate-spin align-middle"></span>
+          <span id="sqMsgText"></span>
+        </div>
+      </div>
+
+      <div id="sgReveal" class="hidden max-w-2xl mx-auto text-center pop-in">
+        <div id="srBanner" class="rounded-3xl text-white p-8 shadow-2xl"></div>
+        <div class="mt-4 bg-white rounded-2xl shadow px-4 py-4 font-bold text-gray-800" id="srCorrect"></div>
+        <div class="mt-3 grid grid-cols-2 gap-3">
+          <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm font-bold text-gray-500">Oʻriningiz</div><div id="srRank" class="text-2xl font-black text-emerald-800"></div></div>
+          <div class="bg-white rounded-2xl shadow p-4"><div class="text-sm font-bold text-gray-500">Ballaringiz</div><div id="srScore" class="text-2xl font-black text-emerald-800"></div></div>
+        </div>
+      </div>
+
+      <div id="sgFinish" class="hidden max-w-xl mx-auto text-center pop-in">
+        <div class="rounded-3xl bg-gradient-to-br from-[#065F46] to-[#10B981] p-8 text-white shadow-2xl">
+          <div class="text-2xl font-black">🏆 Natijalar</div>
+          <div id="sfName" class="mt-2 text-lg font-bold text-emerald-50"></div>
+          <div class="mt-4 grid grid-cols-2 gap-3">
+            <div class="bg-white/15 rounded-2xl p-4"><div class="text-sm text-emerald-50 font-bold">Oʻriningiz</div><div id="sfRank" class="text-3xl font-black"></div></div>
+            <div class="bg-white/15 rounded-2xl p-4"><div class="text-sm text-emerald-50 font-bold">Ball</div><div id="sfScore" class="text-3xl font-black"></div></div>
+          </div>
+        </div>
+        <h3 class="mt-6 font-black text-emerald-900 text-xl">Top 10</h3>
+        <div id="sfTop10" class="mt-3 space-y-2 text-left"></div>
+        <div class="mt-6 flex flex-wrap justify-center gap-3">
+          <button id="btnCsvStudent" class="px-6 rounded-2xl bg-emerald-600 text-white font-black hover:bg-emerald-700 transition-colors shadow-md" style="height:3.25rem">📥 Excel (CSV) yuklab olish</button>
+          <button id="btnSfHome" class="px-6 rounded-2xl bg-white border-2 border-emerald-200 text-emerald-800 font-black hover:bg-emerald-50 transition-colors shadow-sm" style="height:3.25rem">🏠 Bosh sahifa</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ══════════ MODALLAR ══════════ -->
+  <div id="modal-adminlogin" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm pop-in">
+      <div class="text-center text-4xl">🔐</div>
+      <h3 class="text-xl font-black text-center text-gray-800 mt-2">Admin Panel</h3>
+      <p class="text-sm text-gray-500 font-semibold text-center mt-1">Davom etish uchun admin parolini kiriting</p>
+      <input id="adminPass" type="password" autocomplete="off" placeholder="Parol" class="w-full h-12 mt-4 rounded-xl border-2 border-gray-200 px-4 font-bold outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100 transition">
+      <button id="btnAdminLogin" class="w-full h-12 mt-4 rounded-xl bg-[#065F46] text-white font-black hover:bg-emerald-800 transition-colors">Kirish</button>
+    </div>
+  </div>
+
+  <div id="modal-bulk" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-y-auto nice-scroll pop-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-black text-orange-600">📥 JSON dan ommaviy yuklash</h3>
+        <button data-close="modal-bulk" class="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 font-black text-gray-500 transition-colors">✕</button>
+      </div>
+      <label class="block text-sm font-bold text-gray-600">Fan tanlang</label>
+      <select id="bulkSubject" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-bold outline-none focus:border-orange-500 transition"></select>
+      <div id="bulkNewWrap" class="hidden mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <input id="bulkNewName" type="text" placeholder="Yangi fan nomi" class="h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-orange-500">
+        <input id="bulkNewIcon" type="text" value="📗" placeholder="Emoji belgi (masalan 📗)" class="h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-orange-500">
+      </div>
+      <div class="flex items-center justify-between mt-4">
+        <label class="text-sm font-bold text-gray-600">Savollar JSON massivi</label>
+        <button id="btnBulkSample" class="text-emerald-700 font-bold text-sm underline hover:text-emerald-800">Namuna JSON</button>
+      </div>
+      <textarea id="bulkJson" rows="9" spellcheck="false" placeholder='[{"question":"...","options":["A","B","C","D"],"correct":0,"time":20}]' class="w-full mt-1 rounded-xl border-2 border-gray-200 p-3 font-mono text-sm outline-none focus:border-orange-500 transition"></textarea>
+      <div id="bulkPreview" class="mt-3"></div>
+      <div class="mt-4 flex flex-col sm:flex-row gap-3">
+        <button id="btnBulkCheck" class="flex-1 h-12 rounded-xl bg-blue-600 text-white font-black hover:bg-blue-700 transition-colors">Tekshirish</button>
+        <button id="btnBulkUpload" class="flex-1 h-12 rounded-xl bg-emerald-600 text-white font-black hover:bg-emerald-700 transition-colors">Yuklash</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-addq" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-2xl max-h-[92vh] overflow-y-auto nice-scroll pop-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-black text-emerald-800">➕ Yangi savol qoʻshish</h3>
+        <button data-close="modal-addq" class="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 font-black text-gray-500 transition-colors">✕</button>
+      </div>
+      <label class="block text-sm font-bold text-gray-600">Fan</label>
+      <select id="aqSubject" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-bold outline-none focus:border-emerald-500 transition"></select>
+      <label class="block text-sm font-bold text-gray-600 mt-4">Savol matni</label>
+      <textarea id="aqText" rows="2" placeholder="Savolni kiriting..." class="w-full mt-1 rounded-xl border-2 border-gray-200 p-3 font-semibold outline-none focus:border-emerald-500 transition"></textarea>
+      <div class="grid md:grid-cols-2 gap-3 mt-4">
+        <div><label class="block text-xs font-black text-[#E21B3C] mb-1">A varianti</label><input id="aqOpt0" type="text" class="w-full h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500"></div>
+        <div><label class="block text-xs font-black text-[#1368CE] mb-1">B varianti</label><input id="aqOpt1" type="text" class="w-full h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500"></div>
+        <div><label class="block text-xs font-black text-[#D89E00] mb-1">C varianti</label><input id="aqOpt2" type="text" class="w-full h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500"></div>
+        <div><label class="block text-xs font-black text-[#26890C] mb-1">D varianti</label><input id="aqOpt3" type="text" class="w-full h-11 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500"></div>
+      </div>
+      <label class="block text-sm font-bold text-gray-600 mt-4">Toʻgʻri javobni belgilang</label>
+      <div class="grid grid-cols-4 gap-2 mt-1">
+        <label class="cursor-pointer"><input type="radio" name="aqCorrect" value="0" class="peer sr-only"><div class="h-11 rounded-xl flex items-center justify-center font-black text-white bg-[#E21B3C] opacity-40 peer-checked:opacity-100 peer-checked:ring-4 peer-checked:ring-emerald-300 transition-all">A</div></label>
+        <label class="cursor-pointer"><input type="radio" name="aqCorrect" value="1" class="peer sr-only"><div class="h-11 rounded-xl flex items-center justify-center font-black text-white bg-[#1368CE] opacity-40 peer-checked:opacity-100 peer-checked:ring-4 peer-checked:ring-emerald-300 transition-all">B</div></label>
+        <label class="cursor-pointer"><input type="radio" name="aqCorrect" value="2" class="peer sr-only"><div class="h-11 rounded-xl flex items-center justify-center font-black text-white bg-[#D89E00] opacity-40 peer-checked:opacity-100 peer-checked:ring-4 peer-checked:ring-emerald-300 transition-all">C</div></label>
+        <label class="cursor-pointer"><input type="radio" name="aqCorrect" value="3" class="peer sr-only"><div class="h-11 rounded-xl flex items-center justify-center font-black text-white bg-[#26890C] opacity-40 peer-checked:opacity-100 peer-checked:ring-4 peer-checked:ring-emerald-300 transition-all">D</div></label>
+      </div>
+      <label class="block text-sm font-bold text-gray-600 mt-4">Javob vaqti</label>
+      <select id="aqTime" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-bold outline-none focus:border-emerald-500 transition">
+        <option value="10">10 soniya</option>
+        <option value="15">15 soniya</option>
+        <option value="20" selected>20 soniya</option>
+        <option value="30">30 soniya</option>
+        <option value="45">45 soniya</option>
+        <option value="60">60 soniya</option>
+      </select>
+      <button id="btnSaveQuestion" class="w-full h-14 mt-5 rounded-xl bg-[#065F46] text-white font-black text-lg hover:bg-emerald-800 transition-colors">Saqlash</button>
+    </div>
+  </div>
+
+  <div id="modal-live" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-md pop-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-black text-purple-700">🎮 Jonli Xona Ochish (Live Host)</h3>
+        <button data-close="modal-live" class="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 font-black text-gray-500 transition-colors">✕</button>
+      </div>
+      <label class="block text-sm font-bold text-gray-600">Fan tanlang</label>
+      <select id="liveSubject" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-bold outline-none focus:border-purple-500 transition"></select>
+      <div class="mt-3 text-sm font-bold text-gray-500">Fanda mavjud savollar: <span id="liveTotal" class="text-gray-800">0</span> ta</div>
+      <label class="block text-sm font-bold text-gray-600 mt-3">Savollar soni</label>
+      <select id="liveCount" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-bold outline-none focus:border-purple-500 transition"></select>
+      <button id="btnOpenRoom" class="w-full h-14 mt-5 rounded-xl bg-purple-600 text-white font-black text-lg hover:bg-purple-700 transition-colors">Xona ochish</button>
+    </div>
+  </div>
+
+  <div id="modal-viewq" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-3xl max-h-[92vh] overflow-y-auto nice-scroll pop-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 id="vqTitle" class="text-xl font-black text-emerald-800"></h3>
+        <button data-close="modal-viewq" class="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 font-black text-gray-500 transition-colors">✕</button>
+      </div>
+      <div id="vqList" class="max-h-[60vh] overflow-y-auto nice-scroll pr-1"></div>
+    </div>
+  </div>
+
+  <div id="modal-newsubject" class="hidden fixed inset-0 z-[65] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm pop-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-black text-emerald-800">📚 Yangi fan yaratish</h3>
+        <button data-close="modal-newsubject" class="w-9 h-9 rounded-xl bg-gray-100 hover:bg-gray-200 font-black text-gray-500 transition-colors">✕</button>
+      </div>
+      <label class="block text-sm font-bold text-gray-600">Fan nomi</label>
+      <input id="nsName" type="text" placeholder="Masalan: Matematika" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500">
+      <label class="block text-sm font-bold text-gray-600 mt-3">Emoji belgi</label>
+      <input id="nsIcon" type="text" value="📘" class="w-full h-12 mt-1 rounded-xl border-2 border-gray-200 px-3 font-semibold outline-none focus:border-emerald-500">
+      <button id="btnCreateSubject" class="w-full h-12 mt-5 rounded-xl bg-[#065F46] text-white font-black hover:bg-emerald-800 transition-colors">Yaratish</button>
+    </div>
+  </div>
+
+  <div id="modal-confirm" class="hidden fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm pop-in">
+      <h3 id="cfTitle" class="text-lg font-black text-gray-800"></h3>
+      <p id="cfText" class="text-sm font-semibold text-gray-500 mt-2 leading-relaxed"></p>
+      <div class="mt-5 flex gap-3">
+        <button id="cfCancel" class="flex-1 h-11 rounded-xl bg-gray-100 text-gray-700 font-bold hover:bg-gray-200 transition-colors">Bekor qilish</button>
+        <button id="cfOk" class="flex-1 h-11 rounded-xl bg-red-600 text-white font-black hover:bg-red-700 transition-colors"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-alert" class="hidden fixed inset-0 z-[70] bg-black/50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-sm text-center pop-in">
+      <div class="text-4xl">🚫</div>
+      <h3 id="alTitle" class="text-lg font-black text-gray-800 mt-2"></h3>
+      <p id="alText" class="text-sm font-semibold text-gray-500 mt-2 leading-relaxed"></p>
+      <button id="alOk" data-close="modal-alert" class="w-full h-11 mt-5 rounded-xl bg-[#065F46] text-white font-black hover:bg-emerald-800 transition-colors">Tushundim</button>
+    </div>
+  </div>
+
+  <!-- Yuklanmoqda overlay -->
+  <div id="loading" class="hidden fixed inset-0 z-[75] bg-black/40 flex items-center justify-center">
+    <div class="bg-white rounded-2xl px-6 py-5 flex items-center gap-3 shadow-2xl">
+      <div class="w-6 h-6 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+      <span class="font-bold text-gray-700">Yuklanmoqda...</span>
+    </div>
+  </div>
+
+  <!-- Toastlar -->
+  <div id="toastBox" class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 items-end"></div>
+
+<script>
+'use strict';
+
+/* ════════════════ FIREBASE INITSIALIZATSIYA ════════════════ */
+if (!window.firebase) {
+  document.body.innerHTML = '<div class="min-h-screen flex items-center justify-center p-6 bg-[#F0FDF4]"><div class="bg-white rounded-3xl shadow-xl p-8 max-w-md text-center"><div class="text-5xl">📡</div><h1 class="text-2xl font-black text-gray-800 mt-3">Internet aloqasi yo\u02BCq</h1><p class="text-gray-500 font-semibold mt-2">Firebase kutubxonalari yuklanmadi. Internet aloqasini tekshirib, sahifani qayta yuklang.</p></div></div>';
+  throw new Error('Firebase yuklanmadi');
+}
+const firebaseConfig = {
+  apiKey: "AIzaSyDcC4cbkEMzF1vtr3OQ7RJObreIdOx0mfM",
+  authDomain: "texnikum-bazasi.firebaseapp.com",
+  databaseURL: "https://texnikum-bazasi-default-rtdb.firebaseio.com",
+  projectId: "texnikum-bazasi",
+  storageBucket: "texnikum-bazasi.firebasestorage.app",
+  messagingSenderId: "332994399846",
+  appId: "1:332994399846:web:ab6f56fa6ed27b62c927a7",
+  measurementId: "G-0T2MMJEWX9"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ════════════════ GLOBAL HOLAT ════════════════ */
+const S = {
+  offset: 0,
+  adminSeeded: false,
+  subjects: {},
+  host: { pin: null, room: null, players: {}, answers: {}, answersRef: null, answersIdx: -1, playersBound: false, timerKey: null, timerId: null, revealBusy: false },
+  student: { pin: null, playerId: null, room: null, timerKey: null, timerId: null }
+};
+
+const LETTERS = ['A', 'B', 'C', 'D'];
+const OPT_COLORS = ['#E21B3C', '#1368CE', '#D89E00', '#26890C'];
+const SHAPE_SVGS = [
+  '<svg viewBox="0 0 24 24" fill="white" class="w-full h-full drop-shadow"><path d="M12 3.2 21.8 20.8H2.2Z"/></svg>',
+  '<svg viewBox="0 0 24 24" fill="white" class="w-full h-full drop-shadow"><path d="M12 1.8 22.2 12 12 22.2 1.8 12Z"/></svg>',
+  '<svg viewBox="0 0 24 24" fill="white" class="w-full h-full drop-shadow"><circle cx="12" cy="12" r="9.6"/></svg>',
+  '<svg viewBox="0 0 24 24" fill="white" class="w-full h-full drop-shadow"><rect x="3.4" y="3.4" width="17.2" height="17.2" rx="2.6"/></svg>'
+];
+const PALETTE = ['#10B981', '#F59E0B', '#8B5CF6', '#3B82F6', '#EF4444', '#06B6D4', '#EC4899', '#84CC16', '#F97316', '#6366F1', '#14B8A6'];
+const PODIUM_COLORS = ['#F59E0B', '#94A3B8', '#B45309'];
+const DEFAULT_SUBJECTS = [
+  { name: 'Matematika', icon: '🧮' },
+  { name: 'Kimyo', icon: '🧪' },
+  { name: 'Biologiya', icon: '🧬' },
+  { name: 'Ona tili va adabiyot', icon: '📚' },
+  { name: 'Rus tili', icon: '🇷🇺' },
+  { name: 'Ingliz tili', icon: '🇬🇧' },
+  { name: 'Fizika', icon: '⚛️' },
+  { name: 'Tarix', icon: '🏛️' },
+  { name: 'Ekologik monitoring', icon: '🌍' },
+  { name: 'Qayta tiklanuvchi energiya manbalarini taʼmirlash va xizmat koʻrsatish', icon: '☀️' },
+  { name: 'Axborot texnologiyalari', icon: '💻' }
+];
+
+/* ════════════════ YORDAMCHI FUNKSIYALAR ════════════════ */
+const $ = (sel, root) => (root || document).querySelector(sel);
+const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+function esc(v) {
+  return String(v === undefined || v === null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* localStorage / sessionStorage — sandboxed iframe ichida ishlashi uchun try/catch va xotira zaxirasi */
+const memStore = {};
+const store = {
+  get(k) { try { return window.localStorage.getItem(k); } catch (e) { return Object.prototype.hasOwnProperty.call(memStore, 'l_' + k) ? memStore['l_' + k] : null; } },
+  set(k, v) { try { window.localStorage.setItem(k, v); } catch (e) { memStore['l_' + k] = v; } },
+  del(k) { try { window.localStorage.removeItem(k); } catch (e) { delete memStore['l_' + k]; } },
+  sget(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return Object.prototype.hasOwnProperty.call(memStore, 's_' + k) ? memStore['s_' + k] : null; } },
+  sset(k, v) { try { window.sessionStorage.setItem(k, v); } catch (e) { memStore['s_' + k] = v; } },
+  sdel(k) { try { window.sessionStorage.removeItem(k); } catch (e) { delete memStore['s_' + k]; } }
+};
+
+function toast(type, msg) {
+  const box = $('#toastBox');
+  if (!box) return;
+  const colors = { success: 'bg-emerald-600', error: 'bg-red-600', info: 'bg-blue-600', warn: 'bg-amber-500' };
+  const icons = { success: '✅', error: '⚠️', info: 'ℹ️', warn: '⚡' };
+  const el = document.createElement('div');
+  el.className = (colors[type] || colors.info) + ' toast-in text-white px-4 py-3 rounded-xl shadow-lg flex items-start gap-2 max-w-sm';
+  el.innerHTML = '<span class="shrink-0">' + (icons[type] || icons.info) + '</span><span class="text-sm font-semibold leading-snug">' + esc(msg) + '</span>';
+  box.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .3s, transform .3s';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(8px)';
+    setTimeout(() => el.remove(), 320);
+  }, 4200);
+}
+
+let loadCount = 0;
+function showLoading() { loadCount++; $('#loading').classList.remove('hidden'); }
+function hideLoading() { loadCount = Math.max(0, loadCount - 1); if (!loadCount) $('#loading').classList.add('hidden'); }
+
+function openModal(id) { const m = $('#'+id); if (m) m.classList.remove('hidden'); }
+function closeModal(id) { const m = $('#'+id); if (m) m.classList.add('hidden'); }
+
+let confirmResolve = null;
+function confirmDialog(title, text, okLabel) {
+  $('#cfTitle').textContent = title;
+  $('#cfText').textContent = text;
+  $('#cfOk').textContent = okLabel || 'Ha, davom etish';
+  openModal('modal-confirm');
+  return new Promise(res => { confirmResolve = res; });
+}
+
+function alertModal(title, text) {
+  $('#alTitle').textContent = title;
+  $('#alText').textContent = text;
+  openModal('modal-alert');
+}
+
+function fbErrMsg(e) {
+  const m = String((e && e.message) || e || '');
+  if (m.indexOf('permission_denied') !== -1 || m.indexOf('PERMISSION_DENIED') !== -1) return 'Ruxsat yo\u02BCq: ma\u02BClumotlar bazasi qoidalari operatsiyani blokladi';
+  if (m.indexOf('network') !== -1 || m.indexOf('Network') !== -1) return 'Tarmoq xatosi: internet aloqasini tekshiring';
+  return 'Xatolik yuz berdi. Qayta urinib ko\u02BCring';
+}
+
+/* Real-vaqt tinglovchilari reyestri — ekrandan chiqishda off() qilinadi */
+const listeners = [];
+function watch(ref, ev, cb, errCb) { ref.on(ev, cb, errCb || undefined); listeners.push({ ref: ref, ev: ev, cb: cb }); }
+function detachAll() { while (listeners.length) { const l = listeners.pop(); try { l.ref.off(l.ev, l.cb); } catch (e) {} } }
+
+const timers = [];
+function addInterval(fn, ms) { const id = setInterval(fn, ms); timers.push(id); return id; }
+function stopTimers() { while (timers.length) { clearInterval(timers.pop()); } }
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+function getRanking(players) {
+  return Object.keys(players || {}).map(id => {
+    const p = players[id] || {};
+    return { id: id, name: p.name || '', group: p.group || '', score: p.score || 0, correctCount: p.correctCount || 0 };
+  }).sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name));
+}
+
+/* ════════════════ ROUTER ════════════════ */
+const ALL_MODALS = ['modal-adminlogin', 'modal-bulk', 'modal-addq', 'modal-live', 'modal-viewq', 'modal-newsubject', 'modal-confirm', 'modal-alert'];
+const myRoomWatchers = [];
+function detachMyRoomWatchers() { while (myRoomWatchers.length) { const w = myRoomWatchers.pop(); try { w.ref.off('value', w.cb); } catch (e) {} } }
+
+function showView(name) {
+  detachAll();
+  detachMyRoomWatchers();
+  stopTimers();
+  if (S.host.answersRef) { try { S.host.answersRef.off(); } catch (e) {} S.host.answersRef = null; S.host.answersIdx = -1; }
+  if (S.host.timerId) { clearInterval(S.host.timerId); S.host.timerId = null; }
+  if (S.student.timerId) { clearInterval(S.student.timerId); S.student.timerId = null; }
+  cancelConfetti();
+  ALL_MODALS.forEach(id => closeModal(id));
+  if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
+  ['home', 'admin', 'hostzone', 'sgame'].forEach(v => { const el = $('#view-' + v); if (el) el.classList.toggle('hidden', v !== name); });
+  setTab(name);
+  window.scrollTo(0, 0);
+}
+
+function setTab(name) {
+  const active = (name === 'home' || name === 'sgame') ? 'home' : 'admin';
+  [['navHome', 'home'], ['navHomeM', 'home'], ['navAdmin', 'admin'], ['navAdminM', 'admin']].forEach(pair => {
+    const el = $('#' + pair[0]);
+    if (el) el.classList.toggle('tab-active', pair[1] === active);
+  });
+}
+
+/* ════════════════ ADMIN PANEL ════════════════ */
+function openAdminTab() {
+  $('#navLinks').classList.add('hidden');
+  if (store.sget('tq_admin') === '1') { goAdmin(); return; }
+  showView('home');
+  $('#adminPass').value = '';
+  openModal('modal-adminlogin');
+  setTimeout(() => { try { $('#adminPass').focus(); } catch (e) {} }, 120);
+}
+
+function tryAdminLogin() {
+  const v = $('#adminPass').value;
+  if (v === 'admin123') {
+    store.sset('tq_admin', '1');
+    closeModal('modal-adminlogin');
+    toast('success', 'Admin panelga xush kelibsiz!');
+    goAdmin();
+  } else {
+    toast('error', 'Parol notoʻgʻri. Qayta urinib koʻring');
+  }
+}
+
+async function goAdmin() {
+  showView('admin');
+  if (!S.adminSeeded) {
+    S.adminSeeded = true;
+    showLoading();
+    try { await seedSubjectsIfEmpty(); }
+    catch (e) { S.adminSeeded = false; toast('error', fbErrMsg(e)); }
+    hideLoading();
+  }
+  watch(db.ref('subjects'), 'value', snap => {
+    S.subjects = snap.val() || {};
+    renderCatalog();
+    refreshSelects();
+  }, err => {
+    toast('error', fbErrMsg(err));
+    renderCatalog();
+    refreshSelects();
+  });
+  renderMyRooms();
+  attachMyRoomWatchers();
+}
+
+async function seedSubjectsIfEmpty() {
+  const snap = await db.ref('subjects').limitToFirst(1).once('value');
+  if (snap.exists()) return;
+  const upd = {};
+  const base = Date.now();
+  DEFAULT_SUBJECTS.forEach((s, i) => {
+    const id = db.ref().push().key;
+    upd['subjects/' + id] = { name: s.name, icon: s.icon, color: PALETTE[i % PALETTE.length], createdAt: base + i };
+  });
+  await db.ref().update(upd);
+}
+
+function refreshSelects() {
+  const entries = Object.entries(S.subjects);
+  const fill = (sel, includeNew, placeholder) => {
+    const el = $(sel);
+    if (!el) return;
+    const cur = el.value;
+    if (!entries.length) {
+      el.innerHTML = '<option value="">' + placeholder + '</option>';
+    } else {
+      el.innerHTML = entries.map(e => {
+        const s = e[1];
+        const n = s.questions ? Object.keys(s.questions).length : 0;
+        return '<option value="' + e[0] + '">' + esc(s.name) + ' (' + n + ' ta savol)</option>';
+      }).join('') + (includeNew ? '<option value="__new__">Yangi fan yaratish</option>' : '');
+      const has = Array.from(el.options).some(o => o.value === cur);
+      if (cur && has) el.value = cur;
+    }
+  };
+  fill('#aqSubject', false, 'Fan mavjud emas — avval fan yarating');
+  fill('#bulkSubject', true, 'Fan mavjud emas — avval fan yarating');
+  fill('#liveSubject', false, 'Fan mavjud emas — avval fan yarating');
+}
+
+/* ─── Fanlar katalogi ─── */
+function renderCatalog() {
+  const grid = $('#subjectGrid');
+  const subs = Object.entries(S.subjects);
+  let html = '';
+  subs.forEach(e => {
+    const id = e[0], s = e[1];
+    const n = s.questions ? Object.keys(s.questions).length : 0;
+    const color = /^#[0-9A-Fa-f]{6}$/.test(String(s.color || '')) ? s.color : '#10B981';
+    html += '<div class="rounded-2xl bg-white shadow-md border-t-4 p-4 flex flex-col gap-3 hover:shadow-xl transition-all" style="border-top-color:' + esc(color) + '">' +
+      '<div class="flex items-center gap-3">' +
+      '<div class="w-11 h-11 rounded-xl flex items-center justify-center text-2xl shrink-0" style="background:' + esc(color) + '22">' + esc(s.icon || '📘') + '</div>' +
+      '<div class="min-w-0"><div class="font-extrabold text-gray-800 truncate" title="' + esc(s.name) + '">' + esc(s.name) + '</div>' +
+      '<div class="text-sm font-semibold text-gray-500">' + n + ' ta savol</div></div></div>' +
+      '<div class="flex flex-wrap gap-2 mt-auto">' +
+      '<button data-act="view" data-id="' + id + '" class="flex-1 min-w-[110px] px-3 py-2 rounded-xl text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors">Savollarni koʻrish</button>' +
+      '<button data-act="live" data-id="' + id + '" class="flex-1 min-w-[100px] px-3 py-2 rounded-xl text-sm font-bold text-white bg-purple-600 hover:bg-purple-700 transition-colors">Xona ochish</button>' +
+      '<button data-act="del" data-id="' + id + '" class="px-3 py-2 rounded-xl text-sm font-bold text-white bg-red-500 hover:bg-red-600 transition-colors">Oʻchirish</button>' +
+      '</div></div>';
+  });
+  html += '<button id="btnNewSubject" class="rounded-2xl border-4 border-dashed border-emerald-300 bg-emerald-50/60 p-4 flex flex-col items-center justify-center gap-2 text-emerald-700 font-extrabold hover:bg-emerald-100 transition-colors min-h-[150px]">' +
+    '<span class="text-4xl">📗</span><span>+ Yangi fan yaratish</span></button>';
+  grid.innerHTML = html;
+  $$('#subjectGrid [data-act]').forEach(b => {
+    b.onclick = () => {
+      const id = b.dataset.id;
+      if (b.dataset.act === 'view') openViewQuestions(id);
+      else if (b.dataset.act === 'live') openLiveModal(id);
+      else if (b.dataset.act === 'del') deleteSubject(id);
+    };
+  });
+  const ns = $('#btnNewSubject');
+  if (ns) ns.onclick = () => { $('#nsName').value = ''; $('#nsIcon').value = '📘'; openModal('modal-newsubject'); setTimeout(() => { try { $('#nsName').focus(); } catch (e) {} }, 120); };
+}
+
+async function deleteSubject(id) {
+  const s = S.subjects[id];
+  if (!s) return;
+  const n = s.questions ? Object.keys(s.questions).length : 0;
+  const ok = await confirmDialog('Fan oʻchirilsinmi?', '"' + s.name + '" fan oʻchirilsa, undagi ' + n + ' ta savol ham oʻchadi. Bu amalni qaytarib boʻlmaydi.', 'Ha, oʻchirish');
+  if (!ok) return;
+  showLoading();
+  try { await db.ref('subjects/' + id).remove(); toast('success', 'Fan oʻchirildi'); }
+  catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+async function createSubject() {
+  const name = $('#nsName').value.trim();
+  const icon = $('#nsIcon').value.trim() || '📘';
+  if (name.length < 2) { toast('error', 'Fan nomi kamida 2 ta belgidan iborat boʻlishi kerak'); return; }
+  const id = db.ref().push().key;
+  showLoading();
+  try {
+    await db.ref('subjects/' + id).set({ name: name, icon: icon, color: PALETTE[Object.keys(S.subjects).length % PALETTE.length], createdAt: Date.now() });
+    closeModal('modal-newsubject');
+    $('#nsName').value = '';
+    toast('success', 'Fan yaratildi');
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+/* ─── Savollarni koʻrish ─── */
+function openViewQuestions(sid) {
+  const s = S.subjects[sid];
+  if (!s) return;
+  $('#vqTitle').textContent = (s.icon || '📘') + ' ' + s.name + ' — savollar';
+  const list = Object.entries(s.questions || {});
+  const box = $('#vqList');
+  if (!list.length) {
+    box.innerHTML = '<div class="text-gray-500 font-bold py-6 text-center">Bu fanda hozircha savol yoʻq</div>';
+  } else {
+    box.innerHTML = list.map((entry, i) => {
+      const qid = entry[0], q = entry[1];
+      return '<div class="rounded-2xl border bg-white p-4 mb-3">' +
+        '<div class="flex items-start gap-3">' +
+        '<span class="w-8 h-8 rounded-lg bg-emerald-600 text-white font-extrabold flex items-center justify-center shrink-0">' + (i + 1) + '</span>' +
+        '<div class="flex-1 min-w-0">' +
+        '<div class="font-bold text-gray-800">' + esc(q.question) + '</div>' +
+        '<div class="mt-2 grid gap-1.5">' +
+        (q.options || []).map((o, oi) => {
+          const right = oi === q.correct;
+          return '<div class="flex items-center gap-2 text-sm ' + (right ? 'font-extrabold text-emerald-700 bg-emerald-50 rounded-lg px-2 py-1.5' : 'text-gray-600 px-2') + '">' +
+            '<span class="w-6 h-6 rounded-md flex items-center justify-center text-white text-xs font-extrabold shrink-0" style="background:' + (right ? '#059669' : OPT_COLORS[oi]) + '">' + LETTERS[oi] + '</span>' +
+            '<span>' + esc(o) + '</span>' + (right ? '<span class="ml-auto">✔</span>' : '') + '</div>';
+        }).join('') +
+        '</div>' +
+        '<div class="mt-2 flex items-center justify-between">' +
+        '<span class="text-xs font-bold text-gray-500 bg-gray-100 rounded-full px-2.5 py-1">⏱ ' + (q.time || 20) + ' s</span>' +
+        '<button data-delq="' + qid + '" class="px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-sm font-bold hover:bg-red-100 transition-colors">Oʻchirish</button>' +
+        '</div></div></div></div>';
+    }).join('');
+    $$('#vqList [data-delq]').forEach(b => {
+      b.onclick = async () => {
+        const ok = await confirmDialog('Savol oʻchirilsinmi?', 'Bu savol fandan butunlay oʻchiriladi. Davom etasizmi?', 'Ha, oʻchirish');
+        if (!ok) return;
+        try {
+          await db.ref('subjects/' + sid + '/questions/' + b.dataset.delq).remove();
+          toast('success', 'Savol oʻchirildi');
+          openViewQuestions(sid);
+        } catch (e) { toast('error', fbErrMsg(e)); }
+      };
+    });
+  }
+  openModal('modal-viewq');
+}
+
+/* ─── JSON dan ommaviy yuklash ─── */
+function openBulkModal() {
+  refreshSelects();
+  $('#bulkJson').value = '';
+  $('#bulkPreview').innerHTML = '';
+  $('#bulkNewWrap').classList.add('hidden');
+  openModal('modal-bulk');
+}
+
+function validateBulk(text) {
+  let data;
+  try { data = JSON.parse(text); }
+  catch (e) { return { error: 'JSON formati notoʻgʻri: ' + e.message }; }
+  if (!Array.isArray(data)) return { error: 'JSON massiv (array) boʻlishi kerak. Masalan: [ {...}, {...} ]' };
+  const valid = [];
+  const errors = [];
+  data.forEach((item, i) => {
+    const num = i + 1;
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) { errors.push('Savol #' + num + ': obyekt boʻlishi kerak'); return; }
+    const q = typeof item.question === 'string' ? item.question.trim() : '';
+    if (!q) { errors.push('Savol #' + num + ': "question" boʻsh yoki matn emas'); return; }
+    const opts = item.options;
+    if (!Array.isArray(opts) || opts.length !== 4 || opts.some(o => typeof o !== 'string' || !o.trim())) { errors.push('Savol #' + num + ': "options" aynan 4 ta boʻsh boʻlmagan matn variantdan iborat boʻlishi kerak'); return; }
+    const c = item.correct;
+    if (!Number.isInteger(c) || c < 0 || c > 3) { errors.push('Savol #' + num + ': "correct" 0..3 orasidagi butun son boʻlishi kerak'); return; }
+    let t = item.time;
+    if (t === undefined || t === null || t === '') t = 20;
+    if (typeof t !== 'number' || !isFinite(t) || t < 5 || t > 120) { errors.push('Savol #' + num + ': "time" 5..120 oraligʻidagi son boʻlishi kerak'); return; }
+    valid.push({ question: q, options: opts.map(o => o.trim()), correct: c, time: Math.round(t) });
+  });
+  return { valid: valid, errors: errors };
+}
+
+function previewBulk() {
+  const res = validateBulk($('#bulkJson').value);
+  const box = $('#bulkPreview');
+  if (res.error) {
+    box.innerHTML = '<div class="rounded-xl bg-red-50 border border-red-200 text-red-700 font-bold px-4 py-3">' + esc(res.error) + '</div>';
+    return;
+  }
+  let html = '<div class="rounded-xl px-4 py-3 font-bold ' + (res.valid.length ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' : 'bg-amber-50 border border-amber-200 text-amber-800') + '">' +
+    'Tekshirish yakuni: <span class="text-lg">' + res.valid.length + '</span> ta savol toʻgʻri, <span class="text-lg">' + res.errors.length + '</span> ta xatolik.</div>';
+  if (res.errors.length) {
+    html += '<div class="mt-2 max-h-40 overflow-y-auto nice-scroll rounded-xl bg-white border divide-y text-sm font-semibold text-red-700">' +
+      res.errors.map(er => '<div class="px-3 py-2">⚠️ ' + esc(er) + '</div>').join('') + '</div>';
+  }
+  box.innerHTML = html;
+}
+
+async function uploadBulk() {
+  const res = validateBulk($('#bulkJson').value);
+  if (res.error) { toast('error', res.error); return; }
+  if (!res.valid.length) { toast('error', 'Yuklash uchun toʻgʻri savol topilmadi'); return; }
+  let sid = $('#bulkSubject').value;
+  const upd = {};
+  if (sid === '__new__') {
+    const name = $('#bulkNewName').value.trim();
+    if (name.length < 2) { toast('error', 'Yangi fan nomini kiriting'); return; }
+    sid = db.ref().push().key;
+    upd['subjects/' + sid] = { name: name, icon: ($('#bulkNewIcon').value.trim() || '📘'), color: PALETTE[Object.keys(S.subjects).length % PALETTE.length], createdAt: Date.now() };
+  }
+  if (!sid) { toast('error', 'Fanni tanlang'); return; }
+  res.valid.forEach(q => { upd['subjects/' + sid + '/questions/' + db.ref().push().key] = q; });
+  showLoading();
+  try {
+    await db.ref().update(upd);
+    toast('success', res.valid.length + ' ta savol bir martada yuklandi');
+    closeModal('modal-bulk');
+    $('#bulkJson').value = '';
+    $('#bulkPreview').innerHTML = '';
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+function fillSampleJson() {
+  const sample = [
+    { question: 'Suvning kimyoviy formulasi qanday?', options: ['H2O', 'CO2', 'O2', 'NaCl'], correct: 0, time: 15 },
+    { question: 'Quyidagilardan qaysi biri oqsil hisoblanadi?', options: ['Glyukoza', 'Gemoglobin', 'Suv', 'Kraxmal'], correct: 1, time: 20 },
+    { question: 'Fotosintez asosan qaysi organoidda kechadi?', options: ['Mitoxondriya', 'Yadro', 'Xloroplast', 'Ribosoma'], correct: 2, time: 20 },
+    { question: 'ATF molekulasida nechta fosfat guruhi bor?', options: ['1 ta', '2 ta', '3 ta', '4 ta'], correct: 2, time: 15 }
+  ];
+  $('#bulkJson').value = JSON.stringify(sample, null, 2);
+  toast('info', 'Namuna JSON qoʻshildi. Endi "Tekshirish" tugmasini bosing');
+}
+
+/* ─── Yangi savol qoʻshish ─── */
+async function saveQuestion() {
+  const sid = $('#aqSubject').value;
+  if (!sid || !S.subjects[sid]) { toast('error', 'Fanni tanlang'); return; }
+  const question = $('#aqText').value.trim();
+  const options = [$('#aqOpt0'), $('#aqOpt1'), $('#aqOpt2'), $('#aqOpt3')].map(el => el.value.trim());
+  const checked = $$('input[name="aqCorrect"]').filter(r => r.checked)[0];
+  const correct = checked ? Number(checked.value) : -1;
+  const time = Number($('#aqTime').value) || 20;
+  if (question.length < 3) { toast('error', 'Savol matnini kiriting'); return; }
+  if (options.some(o => !o)) { toast('error', 'Barcha 4 ta variantni kiriting'); return; }
+  if (correct < 0) { toast('error', 'Toʻgʻri javobni belgilang'); return; }
+  showLoading();
+  try {
+    await db.ref('subjects/' + sid + '/questions').push({ question: question, options: options, correct: correct, time: time });
+    toast('success', 'Savol qoʻshildi');
+    $('#aqText').value = '';
+    [$('#aqOpt0'), $('#aqOpt1'), $('#aqOpt2'), $('#aqOpt3')].forEach(el => { el.value = ''; });
+    $$('input[name="aqCorrect"]').forEach(r => { r.checked = false; });
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+/* ─── Jonli xona ochish ─── */
+function openLiveModal(sid) {
+  refreshSelects();
+  if (sid) $('#liveSubject').value = sid;
+  updateLiveCounts();
+  openModal('modal-live');
+}
+
+function updateLiveCounts() {
+  const sid = $('#liveSubject').value;
+  const s = S.subjects[sid];
+  const total = s && s.questions ? Object.keys(s.questions).length : 0;
+  $('#liveTotal').textContent = total;
+  const sel = $('#liveCount');
+  if (!total) {
+    sel.innerHTML = '<option value="">Savollar yoʻq</option>';
+    $('#btnOpenRoom').disabled = true;
+    return;
+  }
+  let html = [5, 10, 15, 20, 30].filter(n => n <= total).map(n => '<option value="' + n + '">' + n + ' ta savol</option>').join('');
+  html += '<option value="all">Hammasi (' + total + ' ta)</option>';
+  sel.innerHTML = html;
+  $('#btnOpenRoom').disabled = false;
+}
+
+async function generatePin() {
+  for (let i = 0; i < 30; i++) {
+    const pin = String(100000 + Math.floor(Math.random() * 900000));
+    const snap = await db.ref('rooms/' + pin).once('value');
+    if (!snap.exists()) return pin;
+  }
+  throw new Error('PIN generatsiya qilinmadi');
+}
+
+async function createRoom(subjectId, countVal) {
+  const s = S.subjects[subjectId];
+  if (!s) { toast('error', 'Fanni tanlang'); return; }
+  const total = s.questions ? Object.keys(s.questions).length : 0;
+  if (!total) { toast('error', 'Bu fanda savollar mavjud emas. Avval savol qoʻshing'); return; }
+  const n = (countVal === 'all') ? total : Math.min(parseInt(countVal, 10) || total, total);
+  showLoading();
+  try {
+    const allQ = Object.keys(s.questions).map(qid => {
+      const q = s.questions[qid];
+      return { question: q.question, options: q.options, correct: q.correct, time: q.time };
+    });
+    const selected = shuffle(allQ).slice(0, Math.max(1, n));
+    const pin = await generatePin();
+    await db.ref('rooms/' + pin).set({
+      status: 'waiting',
+      currentQuestion: 0,
+      questionStartedAt: 0,
+      subjectId: subjectId,
+      subjectName: s.name,
+      questions: selected,
+      createdAt: Date.now(),
+      players: {},
+      answers: {}
+    });
+    addMyRoom(pin, s.name);
+    closeModal('modal-live');
+    S.host = { pin: pin, room: null, players: {}, answers: {}, answersRef: null, answersIdx: -1, playersBound: false, timerKey: null, timerId: null, revealBusy: false };
+    toast('success', 'Xona ochildi. PIN: ' + pin);
+    enterHost();
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+/* ─── Mening xonalarim ─── */
+function getMyRooms() {
+  try { return JSON.parse(store.get('tq_rooms') || '[]') || []; } catch (e) { return []; }
+}
+function addMyRoom(pin, subjectName) {
+  let rooms = getMyRooms().filter(r => r.pin !== pin);
+  rooms.unshift({ pin: pin, subjectName: subjectName, createdAt: Date.now() });
+  rooms = rooms.slice(0, 8);
+  store.set('tq_rooms', JSON.stringify(rooms));
+}
+function removeMyRoom(pin) {
+  store.set('tq_rooms', JSON.stringify(getMyRooms().filter(r => r.pin !== pin)));
+}
+
+function statusBadge(pin, st) {
+  const map = {
+    waiting: ['Kutish zali', 'bg-amber-100 text-amber-800'],
+    question: ['Savol bosqichi', 'bg-blue-100 text-blue-800'],
+    reveal: ['Natijalar', 'bg-purple-100 text-purple-800'],
+    finished: ['Tugallangan', 'bg-emerald-100 text-emerald-800']
+  };
+  const m = map[st] || ['Oʻchirilgan', 'bg-gray-100 text-gray-600'];
+  return '<span class="px-2.5 py-1 rounded-full text-xs font-bold ' + m[1] + '" data-status="' + esc(pin) + '">' + m[0] + '</span>';
+}
+
+function renderMyRooms() {
+  const box = $('#myRoomsList');
+  const rooms = getMyRooms();
+  if (!rooms.length) {
+    box.innerHTML = '<div class="text-gray-500 font-semibold text-sm bg-white rounded-2xl px-4 py-4 shadow-sm">Hozircha xona yoʻq. "Jonli Xona Ochish (Live Host)" tugmasi bilan yangi xona oching.</div>';
+    return;
+  }
+  box.innerHTML = rooms.map(r =>
+    '<div class="flex flex-wrap items-center gap-3 bg-white rounded-2xl shadow-md px-4 py-3">' +
+    '<div class="font-mono text-lg font-extrabold text-emerald-800">' + esc(r.pin) + '</div>' +
+    '<div class="font-semibold text-gray-700 truncate max-w-[220px]">' + esc(r.subjectName || '') + '</div>' +
+    '<span data-status="' + esc(r.pin) + '" class="px-2.5 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-600">...</span>' +
+    '<div class="ml-auto flex gap-2">' +
+    '<button data-act="resume" data-pin="' + esc(r.pin) + '" class="px-3 py-1.5 rounded-xl text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors">Davom etish</button>' +
+    '<button data-act="delroom" data-pin="' + esc(r.pin) + '" class="px-3 py-1.5 rounded-xl text-sm font-bold text-white bg-red-500 hover:bg-red-600 transition-colors">Xonani oʻchirish</button>' +
+    '</div></div>').join('');
+  $$('#myRoomsList [data-act]').forEach(b => {
+    b.onclick = () => { if (b.dataset.act === 'resume') resumeRoom(b.dataset.pin); else deleteRoom(b.dataset.pin); };
+  });
+}
+
+function attachMyRoomWatchers() {
+  detachMyRoomWatchers();
+  getMyRooms().forEach(r => {
+    const ref = db.ref('rooms/' + r.pin + '/status');
+    const cb = snap => {
+      const el = $('#myRoomsList [data-status="' + r.pin + '"]');
+      if (el) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = statusBadge(r.pin, snap.val());
+        el.replaceWith(tmp.firstChild);
+      }
+    };
+    ref.on('value', cb, () => {});
+    myRoomWatchers.push({ ref: ref, cb: cb });
+  });
+}
+
+async function resumeRoom(pin) {
+  showLoading();
+  try {
+    const snap = await db.ref('rooms/' + pin).once('value');
+    if (!snap.exists()) {
+      toast('error', 'Xona topilmadi (oʻchirilgan boʻlishi mumkin)');
+      removeMyRoom(pin);
+      renderMyRooms();
+      attachMyRoomWatchers();
+      return;
+    }
+    S.host = { pin: pin, room: null, players: {}, answers: {}, answersRef: null, answersIdx: -1, playersBound: false, timerKey: null, timerId: null, revealBusy: false };
+    enterHost();
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+async function deleteRoom(pin) {
+  const ok = await confirmDialog('Xona oʻchirilsinmi?', pin + ' PIN-kodli xona barcha maʼlumotlari bilan butunlay oʻchiriladi.', 'Ha, oʻchirish');
+  if (!ok) return;
+  showLoading();
+  try {
+    await db.ref('rooms/' + pin).remove();
+    removeMyRoom(pin);
+    renderMyRooms();
+    attachMyRoomWatchers();
+    toast('success', 'Xona oʻchirildi');
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+/* ════════════════ OʻQITUVCHI — JONLI OʻYIN (HOST) ════════════════ */
+function enterHost() {
+  S.host.playersBound = false;
+  S.host.answersRef = null;
+  S.host.answersIdx = -1;
+  S.host.timerKey = null;
+  S.host.timerId = null;
+  S.host.revealBusy = false;
+  showView('hostzone');
+  ['#hzLobby', '#hzQuestion', '#hzReveal', '#hzFinish'].forEach(sel => $(sel).classList.add('hidden'));
+  watch(db.ref('rooms/' + S.host.pin), 'value', snap => {
+    const room = snap.val();
+    if (!room) {
+      toast('error', 'Xona oʻchirildi');
+      removeMyRoom(S.host.pin);
+      S.host.pin = null;
+      goAdmin();
+      return;
+    }
+    S.host.room = room;
+    routeHost();
+  }, err => toast('error', fbErrMsg(err)));
+  ensurePlayersWatcher();
+}
+
+function ensurePlayersWatcher() {
+  if (S.host.playersBound) return;
+  S.host.playersBound = true;
+  watch(db.ref('rooms/' + S.host.pin + '/players'), 'value', snap => {
+    S.host.players = snap.val() || {};
+    const st = S.host.room && S.host.room.status;
+    if (st === 'waiting') renderLobbyPlayers();
+    else if (st === 'question' || st === 'reveal') { renderHostPhase(); maybeAutoReveal(); }
+    else if (st === 'finished') renderFinish();
+  }, err => toast('error', fbErrMsg(err)));
+}
+
+function routeHost() {
+  const room = S.host.room;
+  const st = room.status;
+  $('#hzLobby').classList.toggle('hidden', st !== 'waiting');
+  $('#hzQuestion').classList.toggle('hidden', st !== 'question');
+  $('#hzReveal').classList.toggle('hidden', st !== 'reveal');
+  $('#hzFinish').classList.toggle('hidden', st !== 'finished');
+  if (st === 'waiting') renderLobby();
+  else if (st === 'question') { ensureAnswersWatcher(); renderHostQuestion(); }
+  else if (st === 'reveal') { ensureAnswersWatcher(); renderHostReveal(); }
+  else if (st === 'finished') renderFinish();
+}
+
+function renderLobby() {
+  const room = S.host.room;
+  $('#lobbyPin').textContent = S.host.pin;
+  $('#lobbySubject').textContent = room.subjectName || '';
+  renderLobbyPlayers();
+}
+
+function renderLobbyPlayers() {
+  const players = getRanking(S.host.players);
+  $('#lobbyCount').textContent = players.length;
+  const startBtn = $('#btnStartGame');
+  startBtn.disabled = players.length === 0;
+  const grid = $('#lobbyPlayers');
+  if (!players.length) {
+    grid.innerHTML = '<div class="col-span-full text-center text-gray-400 font-bold py-8 bg-white rounded-2xl shadow-sm">Hozircha oʻquvchi yoʻq. Oʻquvchilar PIN-kod orqali qoʻshilishini kuting...</div>';
+    return;
+  }
+  grid.innerHTML = players.map(p =>
+    '<div class="bg-white rounded-2xl shadow-md px-4 py-3 flex items-center gap-3 pop-in">' +
+    '<div class="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 font-extrabold flex items-center justify-center shrink-0">' + esc((p.name || '?').charAt(0).toUpperCase()) + '</div>' +
+    '<div class="min-w-0 flex-1">' +
+    '<div class="font-extrabold text-gray-800 truncate">' + esc(p.name) + '</div>' +
+    '<div class="text-sm text-gray-500 font-semibold truncate">' + esc(p.group) + '</div></div>' +
+    '<button data-kick="' + esc(p.id) + '" title="Chiqarib yuborish" class="px-3 py-2 rounded-xl bg-red-50 text-red-600 font-bold hover:bg-red-100 transition-colors text-sm shrink-0">❌ Chiqarib yuborish</button>' +
+    '</div>').join('');
+  $$('#lobbyPlayers [data-kick]').forEach(b => { b.onclick = () => kickPlayer(b.dataset.kick); });
+}
+
+async function kickPlayer(pid) {
+  try {
+    await db.ref('rooms/' + S.host.pin + '/players/' + pid).remove();
+    toast('success', 'Oʻquvchi chiqarib yuborildi');
+  } catch (e) { toast('error', fbErrMsg(e)); }
+}
+
+function startGame() {
+  if (!Object.keys(S.host.players || {}).length) { toast('error', 'Kamida 1 ta oʻquvchi qoʻshilishi kerak'); return; }
+  startQuestion(0);
+}
+
+function startQuestion(idx) {
+  const room = S.host.room;
+  if (!room || !room.questions || idx < 0 || idx >= room.questions.length) return;
+  const upd = { status: 'question', currentQuestion: idx, questionStartedAt: firebase.database.ServerValue.TIMESTAMP };
+  Object.keys(S.host.players || {}).forEach(pid => { upd['players/' + pid + '/answeredCurrent'] = false; });
+  db.ref('rooms/' + S.host.pin).update(upd).catch(e => toast('error', fbErrMsg(e)));
+}
+
+function ensureAnswersWatcher() {
+  const idx = S.host.room.currentQuestion || 0;
+  if (S.host.answersRef && S.host.answersIdx === idx) return;
+  if (S.host.answersRef) { try { S.host.answersRef.off(); } catch (e) {} }
+  S.host.answersIdx = idx;
+  S.host.answersRef = db.ref('rooms/' + S.host.pin + '/answers/' + idx);
+  S.host.answersRef.on('value', snap => {
+    S.host.answers[idx] = snap.val() || {};
+    renderHostPhase();
+    maybeAutoReveal();
+  }, err => toast('error', fbErrMsg(err)));
+}
+
+function renderHostPhase() {
+  const st = S.host.room && S.host.room.status;
+  if (st === 'question') renderHostQuestion();
+  else if (st === 'reveal') renderHostReveal();
+}
+
+function renderHostQuestion() {
+  const room = S.host.room;
+  const idx = room.currentQuestion || 0;
+  const q = (room.questions || [])[idx];
+  if (!q) return;
+  $('#hqIdx').textContent = (idx + 1) + ' / ' + room.questions.length + ' — savol';
+  $('#hqText').textContent = q.question;
+  $('#hqOptions').innerHTML = (q.options || []).map((o, i) =>
+    '<div class="flex items-center gap-3 bg-white rounded-2xl px-5 py-4 shadow-md text-2xl font-extrabold text-gray-800 pop-in">' +
+    '<span class="w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg shrink-0" style="background:' + OPT_COLORS[i] + '">' + LETTERS[i] + '</span>' +
+    '<span>' + esc(o) + '</span></div>').join('');
+  setupHostTimer(q);
+  updateAnswerCounter();
+}
+
+function setupHostTimer(q) {
+  const key = (S.host.room.currentQuestion || 0) + ':' + (S.host.room.questionStartedAt || 0);
+  if (S.host.timerKey === key) { updateHostTimerFace(q); return; }
+  S.host.timerKey = key;
+  if (S.host.timerId) { clearInterval(S.host.timerId); S.host.timerId = null; }
+  const total = (q.time || 20) * 1000;
+  const tick = () => {
+    const remain = Math.max(0, total - (Date.now() + S.offset - (S.host.room.questionStartedAt || 0)));
+    updateHostTimerFace(q, remain, total);
+    if (remain <= 0 && S.host.room && S.host.room.status === 'question') triggerReveal();
+  };
+  tick();
+  S.host.timerId = setInterval(tick, 300);
+}
+
+function updateHostTimerFace(q, remain, total) {
+  const r = (remain === undefined) ? Math.max(0, (q.time || 20) * 1000 - (Date.now() + S.offset - (S.host.room.questionStartedAt || 0))) : remain;
+  const tt = (total === undefined) ? (q.time || 20) * 1000 : total;
+  $('#hqTimer').textContent = Math.ceil(r / 1000);
+  $('#hqTimerBar').style.width = (r / tt * 100) + '%';
+  $('#hqTimerBar').style.background = r < 5000 ? '#EF4444' : '#10B981';
+}
+
+function updateAnswerCounter() {
+  const room = S.host.room;
+  const idx = room.currentQuestion || 0;
+  const answered = Object.keys(S.host.answers[idx] || {}).length;
+  const total = Object.keys(S.host.players || {}).length;
+  $('#hqCounter').textContent = answered + ' / ' + total + ' javob berdi';
+  $('#hqProgress').style.width = (total ? (answered / total * 100) : 0) + '%';
+}
+
+function maybeAutoReveal() {
+  const room = S.host.room;
+  if (!room || room.status !== 'question') return;
+  const idx = room.currentQuestion || 0;
+  const answered = Object.keys(S.host.answers[idx] || {}).length;
+  const total = Object.keys(S.host.players || {}).length;
+  if (total > 0 && answered >= total) triggerReveal();
+}
+
+/* Reveal: ballarni hisoblash (javoblar tugunidan, bitta multi-path update bilan — ikki marta hisoblanmaydi) */
+async function triggerReveal() {
+  if (S.host.revealBusy) return;
+  S.host.revealBusy = true;
+  try {
+    const room = S.host.room;
+    const idx = room.currentQuestion || 0;
+    const scoredSnap = await db.ref('rooms/' + S.host.pin + '/scored/' + idx).once('value');
+    if (!scoredSnap.exists()) {
+      const results = await Promise.all([
+        db.ref('rooms/' + S.host.pin + '/answers/' + idx).once('value'),
+        db.ref('rooms/' + S.host.pin + '/players').once('value')
+      ]);
+      const answers = results[0].val() || {};
+      const players = results[1].val() || {};
+      const q = room.questions[idx];
+      const limit = (q.time || 20) * 1000;
+      const upd = { status: 'reveal', ['scored/' + idx]: true };
+      Object.keys(players).forEach(pid => {
+        const p = players[pid] || {};
+        const a = answers[pid];
+        let points = 0, streak = 0, correctDelta = 0, lastAnswer = null;
+        if (a && typeof a.choice === 'number') {
+          lastAnswer = a.choice;
+          if (a.choice === q.correct) {
+            const t = Math.max(0, Math.min(a.timeMs || limit, limit));
+            const base = Math.round(1000 * (1 - (t / limit) / 2));
+            streak = (p.streak || 0) + 1;
+            const bonus = Math.min((streak - 1) * 100, 500);
+            points = base + bonus;
+            correctDelta = 1;
+          }
+        }
+        upd['players/' + pid + '/lastAnswer'] = lastAnswer;
+        upd['players/' + pid + '/lastPoints'] = points;
+        upd['players/' + pid + '/streak'] = streak;
+        upd['players/' + pid + '/correctCount'] = (p.correctCount || 0) + correctDelta;
+        upd['players/' + pid + '/score'] = (p.score || 0) + points;
+      });
+      await db.ref('rooms/' + S.host.pin).update(upd);
+    } else {
+      await db.ref('rooms/' + S.host.pin + '/status').set('reveal');
+    }
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { S.host.revealBusy = false; }
+}
+
+function renderHostReveal() {
+  const room = S.host.room;
+  const idx = room.currentQuestion || 0;
+  const q = (room.questions || [])[idx];
+  if (!q) return;
+  $('#hrText').textContent = q.question;
+  const answers = Object.keys(S.host.answers[idx] || {}).map(k => S.host.answers[idx][k]);
+  const counts = [0, 0, 0, 0];
+  answers.forEach(a => { if (a && typeof a.choice === 'number' && a.choice >= 0 && a.choice < 4) counts[a.choice]++; });
+  const max = Math.max(1, counts[0], counts[1], counts[2], counts[3]);
+  $('#hrOptions').innerHTML = (q.options || []).map((o, i) => {
+    const right = i === q.correct;
+    return '<div class="rounded-2xl px-5 py-4 shadow-md pop-in ' + (right ? 'bg-emerald-50 border-2 border-emerald-500' : 'bg-white') + '">' +
+      '<div class="flex items-center gap-3">' +
+      '<span class="w-9 h-9 rounded-xl flex items-center justify-center text-white font-extrabold shrink-0" style="background:' + OPT_COLORS[i] + '">' + LETTERS[i] + '</span>' +
+      '<span class="font-bold text-gray-800 text-lg flex-1">' + esc(o) + (right ? ' <span class="text-emerald-600 whitespace-nowrap">✔ Toʻgʻri javob</span>' : '') + '</span>' +
+      '</div>' +
+      '<div class="mt-3 flex items-center gap-2">' +
+      '<div class="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full transition-all duration-500" style="width:' + (counts[i] / max * 100) + '%;background:' + OPT_COLORS[i] + '"></div></div>' +
+      '<span class="font-extrabold text-gray-700 w-8 text-right">' + counts[i] + '</span>' +
+      '</div></div>';
+  }).join('');
+  const rank = getRanking(S.host.players);
+  $('#hrTop').innerHTML = rank.length ? rank.slice(0, 5).map((p, i) =>
+    '<div class="flex items-center gap-3 px-4 py-2.5 rounded-xl border ' + (i === 0 ? 'bg-amber-50 border-amber-200' : i === 1 ? 'bg-gray-50 border-gray-200' : 'bg-white border-gray-100') + '">' +
+    '<span class="font-extrabold text-lg w-7 text-gray-500">' + (i + 1) + '</span>' +
+    '<span class="flex-1 font-bold text-gray-800 truncate">' + esc(p.name) + '</span>' +
+    '<span class="font-extrabold text-emerald-700">' + p.score + ' ball</span></div>').join('')
+    : '<div class="text-gray-400 font-bold">Natijalar yoʻq</div>';
+  const isLast = idx >= room.questions.length - 1;
+  const btnNext = $('#btnNextQ');
+  btnNext.textContent = isLast ? 'Natijalarni koʻrsatish' : 'Keyingi savol';
+  btnNext.disabled = false;
+  btnNext.onclick = () => { btnNext.disabled = true; if (isLast) finishGame(); else startQuestion(idx + 1); };
+  $('#btnFinishEarly').onclick = async () => {
+    const ok = await confirmDialog('Oʻyinni yakunlash', 'Oʻyin hozir yakunlanadi va yakuniy natijalar koʻrsatiladi. Davom etasizmi?', 'Ha, yakunlash');
+    if (ok) finishGame();
+  };
+}
+
+async function finishGame() {
+  showLoading();
+  try {
+    await db.ref('rooms/' + S.host.pin + '/status').set('finished');
+    toast('success', 'Oʻyin yakunlandi');
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+function renderFinish() {
+  const room = S.host.room;
+  const rank = getRanking(S.host.players);
+  $('#finSubject').textContent = room.subjectName || '';
+  $('#finPin').textContent = S.host.pin;
+  const medals = ['🥇', '🥈', '🥉'];
+  const heights = ['h-44', 'h-32', 'h-24'];
+  const order = [1, 0, 2];
+  $('#podium').innerHTML = order.map(oi => {
+    const p = rank[oi];
+    if (!p) return '<div class="flex-1"></div>';
+    return '<div class="flex-1 flex flex-col items-center gap-1.5 pop-in min-w-0">' +
+      '<div class="text-5xl">' + medals[oi] + '</div>' +
+      '<div class="font-extrabold text-gray-800 text-center truncate max-w-full px-2">' + esc(p.name) + '</div>' +
+      '<div class="text-sm font-bold text-gray-500 truncate max-w-full px-2">' + esc(p.group) + '</div>' +
+      '<div class="w-full ' + heights[oi] + ' rounded-t-2xl flex items-start justify-center pt-3 text-white font-extrabold text-2xl shadow-lg" style="background:' + PODIUM_COLORS[oi] + '">' + p.score + '</div></div>';
+  }).join('');
+  $('#finTable').innerHTML = rank.map((p, i) =>
+    '<tr class="' + (i % 2 ? 'bg-gray-50' : 'bg-white') + '">' +
+    '<td class="px-4 py-3 font-extrabold">' + (i + 1) + '</td>' +
+    '<td class="px-4 py-3 font-bold">' + esc(p.name) + '</td>' +
+    '<td class="px-4 py-3 font-semibold text-gray-600">' + esc(p.group) + '</td>' +
+    '<td class="px-4 py-3 font-extrabold text-emerald-700">' + p.score + '</td>' +
+    '<td class="px-4 py-3 font-semibold">' + p.correctCount + '</td></tr>').join('');
+  startConfetti();
+  $('#btnCsvAdmin').onclick = () => downloadCSV(rank, room.subjectName, S.host.pin);
+  $('#btnNewGame').onclick = () => createRoom(room.subjectId, room.questions.length);
+  $('#btnHomeAdmin').onclick = () => goAdmin();
+}
+
+/* ─── Konfetti (canvas, tashqi kutubxonasiz) ─── */
+let confettiRAF = null;
+function startConfetti() {
+  const cv = $('#confettiCanvas');
+  if (!cv) return;
+  cv.width = cv.offsetWidth || 600;
+  cv.height = cv.offsetHeight || 320;
+  const parts = [];
+  const colors = ['#10B981', '#F59E0B', '#8B5CF6', '#3B82F6', '#EF4444', '#EC4899'];
+  for (let i = 0; i < 150; i++) {
+    parts.push({
+      x: Math.random() * cv.width,
+      y: -20 - Math.random() * cv.height * 0.6,
+      w: 6 + Math.random() * 8,
+      h: 8 + Math.random() * 10,
+      c: colors[Math.floor(Math.random() * colors.length)],
+      vy: 1.5 + Math.random() * 3,
+      vx: -1 + Math.random() * 2,
+      rot: Math.random() * 360,
+      vr: -6 + Math.random() * 12
+    });
+  }
+  const ctx = cv.getContext('2d');
+  cancelAnimationFrame(confettiRAF);
+  const loop = () => {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    let alive = false;
+    parts.forEach(p => {
+      p.y += p.vy; p.x += p.vx; p.rot += p.vr;
+      if (p.y < cv.height + 30) alive = true;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot * Math.PI / 180);
+      ctx.fillStyle = p.c;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    });
+    if (alive) confettiRAF = requestAnimationFrame(loop);
+  };
+  loop();
+}
+function cancelConfetti() {
+  if (confettiRAF) cancelAnimationFrame(confettiRAF);
+  confettiRAF = null;
+  const cv = $('#confettiCanvas');
+  if (cv) { try { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); } catch (e) {} }
+}
+
+/* ─── Excel (CSV) yuklab olish ─── */
+function downloadCSV(rank, subjectName, pin) {
+  const header = ['Oʻrin', 'Ism-familiya', 'Guruh', 'Ball', 'Toʻgʻri javoblar'];
+  const rows = [header].concat(rank.map((p, i) => [String(i + 1), p.name, p.group || '', String(p.score || 0), String(p.correctCount || 0)]));
+  const escCsv = v => { v = String(v); return /[";\n,]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const csv = '\uFEFF' + rows.map(r => r.map(escCsv).join(';')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date();
+  const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const subj = String(subjectName || 'fan').replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_+|_+$/g, '') || 'fan';
+  a.href = url;
+  a.download = 'natijalar_' + subj + '_' + pin + '_' + date + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('success', 'CSV fayl yuklab olindi');
+}
+
+/* ════════════════ OʻQUVCHI — OʻYIN OQIMI ════════════════ */
+async function joinGame() {
+  const pin = $('#inpPin').value.trim();
+  const name = $('#inpName').value.trim();
+  const group = $('#inpGroup').value.trim();
+  if (!/^\d{6}$/.test(pin)) { toast('error', 'PIN-kod aynan 6 ta raqamdan iborat boʻlishi kerak'); return; }
+  if (name.length < 3) { toast('error', 'Ism-familiya kamida 3 ta belgidan iborat boʻlishi kerak'); return; }
+  if (!group) { toast('error', 'Guruh nomini kiriting'); return; }
+  showLoading();
+  try {
+    /* Eski sessiya boʻlsa — eski oʻyinchini oʻchirib, takrorlanishning oldini olamiz */
+    const raw = store.get('tq_student');
+    if (raw) {
+      try {
+        const old = JSON.parse(raw);
+        if (old && old.pin && old.playerId) db.ref('rooms/' + old.pin + '/players/' + old.playerId).remove().catch(() => {});
+      } catch (e) {}
+      store.del('tq_student');
+    }
+    const snap = await db.ref('rooms/' + pin).once('value');
+    if (!snap.exists()) { toast('error', 'Xona topilmadi'); return; }
+    const room = snap.val();
+    if (room.status !== 'waiting') { toast('error', 'Oʻyin allaqachon boshlangan'); return; }
+    const pRef = db.ref('rooms/' + pin + '/players').push();
+    const playerId = pRef.key;
+    await pRef.set({ name: name, group: group, score: 0, answeredCurrent: false, streak: 0, joinedAt: firebase.database.ServerValue.TIMESTAMP });
+    store.set('tq_student', JSON.stringify({ pin: pin, playerId: playerId }));
+    S.student = { pin: pin, playerId: playerId, room: null, timerKey: null, timerId: null };
+    $('#inpPin').value = ''; $('#inpName').value = ''; $('#inpGroup').value = '';
+    toast('success', 'Oʻyinga muvaffaqiyatli qoʻshildingiz!');
+    enterStudentRoom();
+  } catch (e) { toast('error', fbErrMsg(e)); }
+  finally { hideLoading(); }
+}
+
+function tryRejoin() {
+  const raw = store.get('tq_student');
+  if (!raw) return;
+  let sess;
+  try { sess = JSON.parse(raw); } catch (e) { store.del('tq_student'); return; }
+  if (!sess || !sess.pin || !sess.playerId) { store.del('tq_student'); return; }
+  showLoading();
+  db.ref('rooms/' + sess.pin).once('value').then(snap => {
+    if (!snap.exists()) { store.del('tq_student'); hideLoading(); return; }
+    return db.ref('rooms/' + sess.pin + '/players/' + sess.playerId).once('value').then(ps => {
+      if (!ps.exists()) { store.del('tq_student'); hideLoading(); return; }
+      S.student = { pin: sess.pin, playerId: sess.playerId, room: null, timerKey: null, timerId: null };
+      enterStudentRoom();
+      toast('info', 'Avvalgi xonaga qayta ulandingiz');
+      hideLoading();
+    });
+  }).catch(() => hideLoading());
+}
+
+function enterStudentRoom() {
+  showView('sgame');
+  ['#sgWaiting', '#sgQuestion', '#sgReveal', '#sgFinish'].forEach(sel => $(sel).classList.add('hidden'));
+  watch(db.ref('rooms/' + S.student.pin), 'value', snap => {
+    const room = snap.val();
+    if (!room) {
+      store.del('tq_student');
+      S.student.room = null;
+      S.student.pin = null;
+      S.student.playerId = null;
+      toast('error', 'Xona oʻchirildi yoki mavjud emas');
+      showView('home');
+      return;
+    }
+    S.student.room = room;
+    routeStudent();
+  }, err => toast('error', fbErrMsg(err)));
+  watch(db.ref('rooms/' + S.student.pin + '/players/' + S.student.playerId), 'value', snap => {
+    if (!snap.exists() && S.student.room) {
+      store.del('tq_student');
+      S.student.room = null;
+      S.student.pin = null;
+      S.student.playerId = null;
+      alertModal('Chiqarib yuborildingiz', 'Siz xonadan chiqarib yuborildingiz');
+      showView('home');
+    }
+  });
+}
+
+function routeStudent() {
+  const room = S.student.room;
+  if (!room) return;
+  const st = room.status;
+  $('#sgWaiting').classList.toggle('hidden', st !== 'waiting');
+  $('#sgQuestion').classList.toggle('hidden', st !== 'question');
+  $('#sgReveal').classList.toggle('hidden', st !== 'reveal');
+  $('#sgFinish').classList.toggle('hidden', st !== 'finished');
+  if (st === 'waiting') renderSgWaiting();
+  else if (st === 'question') renderSgQuestion();
+  else if (st === 'reveal') renderSgReveal();
+  else if (st === 'finished') renderSgFinish();
+}
+
+function renderSgWaiting() {
+  const room = S.student.room;
+  $('#swPin').textContent = S.student.pin;
+  const me = (room.players || {})[S.student.playerId] || {};
+  $('#swName').textContent = me.name || '';
+  $('#swGroup').textContent = me.group || '';
+  $('#swCount').textContent = 'Xonada ' + Object.keys(room.players || {}).length + ' ta oʻquvchi';
+}
+
+function studentAnswered(room, idx, me) {
+  const mine = ((room.answers || {})[idx] || {})[S.student.playerId];
+  return !!mine || (me && me.answeredCurrent === true);
+}
+
+function renderSgQuestion() {
+  const room = S.student.room;
+  const idx = room.currentQuestion || 0;
+  const q = (room.questions || [])[idx];
+  if (!q) return;
+  const me = (room.players || {})[S.student.playerId] || {};
+  const answered = studentAnswered(room, idx, me);
+  $('#sqIdx').textContent = 'Savol ' + (idx + 1) + ' / ' + room.questions.length;
+  $('#sqText').textContent = q.question;
+  $('#sqButtons').innerHTML = (q.options || []).map((o, i) => {
+    const dis = answered ? ' disabled' : '';
+    const cls = answered ? ' opacity-60 cursor-not-allowed' : ' hover:brightness-110';
+    return '<button data-choice="' + i + '"' + dis + ' class="answer-btn relative rounded-2xl px-4 py-6 md:py-8 text-white font-extrabold text-lg md:text-xl shadow-lg flex flex-col items-center gap-2 transition-all active:scale-95' + cls + '" style="background:' + OPT_COLORS[i] + '">' +
+      '<span class="w-10 h-10 md:w-12 md:h-12">' + SHAPE_SVGS[i] + '</span>' +
+      '<span class="text-center leading-snug">' + esc(o) + '</span></button>';
+  }).join('');
+  if (answered) {
+    $('#sqMsg').classList.remove('hidden');
+    $('#sqMsgText').textContent = 'Javobingiz qabul qilindi. Boshqalarni kutamiz...';
+  } else {
+    $('#sqMsg').classList.add('hidden');
+  }
+  $$('#sqButtons [data-choice]').forEach(b => { b.onclick = () => sendAnswer(Number(b.dataset.choice), q, idx); });
+  setupStudentTimer(q, answered);
+}
+
+function setupStudentTimer(q, answered) {
+  const key = (S.student.room.currentQuestion || 0) + ':' + (S.student.room.questionStartedAt || 0);
+  if (S.student.timerKey === key) return;
+  S.student.timerKey = key;
+  if (S.student.timerId) { clearInterval(S.student.timerId); S.student.timerId = null; }
+  const total = (q.time || 20) * 1000;
+  const C = 163.36;
+  const ring = $('#sqRingFg');
+  ring.style.strokeDasharray = C;
+  const tick = () => {
+    const room = S.student.room;
+    if (!room) return;
+    const remain = Math.max(0, total - (Date.now() + S.offset - (room.questionStartedAt || 0)));
+    $('#sqTimerNum').textContent = Math.ceil(remain / 1000);
+    ring.style.strokeDashoffset = C * (1 - remain / total);
+    ring.style.stroke = remain < 5000 ? '#EF4444' : '#059669';
+    if (remain <= 0) { clearInterval(S.student.timerId); S.student.timerId = null; }
+  };
+  tick();
+  S.student.timerId = setInterval(tick, 250);
+}
+
+async function sendAnswer(choice, q, idx) {
+  const room = S.student.room;
+  if (!room || room.status !== 'question') return;
+  if (((room.answers || {})[idx] || {})[S.student.playerId]) return;
+  $$('#sqButtons [data-choice]').forEach(b => { b.disabled = true; b.classList.add('opacity-60', 'cursor-not-allowed'); });
+  const btn = $('#sqButtons [data-choice="' + choice + '"]');
+  if (btn) btn.classList.add('ring-4', 'ring-white/70');
+  $('#sqMsg').classList.remove('hidden');
+  $('#sqMsgText').textContent = 'Javobingiz qabul qilindi. Boshqalarni kutamiz...';
+  const timeMs = Math.max(0, Math.min((q.time || 20) * 1000, Date.now() + S.offset - (room.questionStartedAt || 0)));
+  const upd = {};
+  upd['answers/' + idx + '/' + S.student.playerId] = { choice: choice, timeMs: timeMs };
+  upd['players/' + S.student.playerId + '/answeredCurrent'] = true;
+  upd['players/' + S.student.playerId + '/lastAnswer'] = choice;
+  try { await db.ref('rooms/' + S.student.pin).update(upd); }
+  catch (e) { toast('error', fbErrMsg(e)); }
+}
+
+function renderSgReveal() {
+  const room = S.student.room;
+  const idx = room.currentQuestion || 0;
+  const q = (room.questions || [])[idx];
+  if (!q) return;
+  const mine = ((room.answers || {})[idx] || {})[S.student.playerId];
+  const me = (room.players || {})[S.student.playerId] || {};
+  const rank = getRanking(room.players);
+  const myRank = rank.findIndex(p => p.id === S.student.playerId) + 1;
+  const banner = $('#srBanner');
+  if (mine && mine.choice === q.correct) {
+    banner.className = 'rounded-3xl bg-gradient-to-br from-emerald-500 to-[#10B981] text-white p-8 shadow-2xl pop-in';
+    banner.innerHTML = '<div class="text-3xl md:text-4xl font-black">Toʻgʻri! 🎉 +' + (me.lastPoints || 0) + ' ball</div>' +
+      '<div class="mt-2 font-bold text-emerald-50">' + (me.streak ? 'Ketma-ket ' + me.streak + ' ta toʻgʻri javob!' : '') + '</div>';
+  } else if (!mine) {
+    banner.className = 'rounded-3xl bg-gradient-to-br from-red-500 to-red-600 text-white p-8 shadow-2xl pop-in';
+    banner.innerHTML = '<div class="text-3xl md:text-4xl font-black">Vaqt tugadi ⏰</div>';
+  } else {
+    banner.className = 'rounded-3xl bg-gradient-to-br from-red-500 to-red-600 text-white p-8 shadow-2xl pop-in';
+    banner.innerHTML = '<div class="text-3xl md:text-4xl font-black">Notoʻgʻri 😔</div><div class="mt-2 font-bold text-red-50">Keyingi savolda omad!</div>';
+  }
+  $('#srCorrect').innerHTML = 'Toʻgʻri javob: <span class="inline-flex items-center gap-2 bg-emerald-50 rounded-xl px-3 py-1.5 mt-1">' +
+    '<span class="w-7 h-7 rounded-lg text-white font-extrabold flex items-center justify-center text-sm" style="background:' + OPT_COLORS[q.correct] + '">' + LETTERS[q.correct] + '</span>' +
+    '<span>' + esc(q.options[q.correct]) + '</span></span>';
+  $('#srRank').textContent = myRank > 0 ? myRank + '-oʻrin' : '-';
+  $('#srScore').textContent = (me.score || 0) + ' ball';
+}
+
+function renderSgFinish() {
+  const room = S.student.room;
+  const rank = getRanking(room.players);
+  const myRank = rank.findIndex(p => p.id === S.student.playerId) + 1;
+  const me = (room.players || {})[S.student.playerId] || {};
+  $('#sfName').textContent = me.name || '';
+  $('#sfRank').textContent = myRank > 0 ? myRank + '-oʻrin' : '-';
+  $('#sfScore').textContent = (me.score || 0) + ' ball';
+  $('#sfTop10').innerHTML = rank.length ? rank.slice(0, 10).map((p, i) =>
+    '<div class="flex items-center gap-3 px-4 py-3 rounded-xl shadow-sm ' + (p.id === S.student.playerId ? 'bg-emerald-50 border border-emerald-300' : 'bg-white') + '">' +
+    '<span class="w-7 font-extrabold text-gray-500">' + (i + 1) + '</span>' +
+    '<span class="flex-1 font-bold text-gray-800 truncate">' + esc(p.name) + '</span>' +
+    '<span class="text-sm text-gray-500 font-semibold truncate max-w-[100px]">' + esc(p.group) + '</span>' +
+    '<span class="font-extrabold text-emerald-700">' + p.score + '</span></div>').join('')
+    : '<div class="text-gray-400 font-bold text-center py-4">Natijalar yoʻq</div>';
+  $('#btnCsvStudent').onclick = () => downloadCSV(rank, room.subjectName, S.student.pin);
+  $('#btnSfHome').onclick = () => { store.del('tq_student'); S.student.pin = null; S.student.room = null; S.student.playerId = null; showView('home'); };
+}
+
+/* ════════════════ ISHGA TUSHIRISH ════════════════ */
+function init() {
+  /* Aloqa holati va server vaqti ofseti */
+  db.ref('.info/connected').on('value', snap => {
+    const el = $('#connBanner');
+    if (el) el.classList.toggle('hidden', !!snap.val());
+  });
+  db.ref('.info/serverTimeOffset').on('value', snap => { S.offset = snap.val() || 0; });
+
+  /* Navigatsiya */
+  const goHome = () => { $('#navLinks').classList.add('hidden'); showView('home'); };
+  $('#navLogo').onclick = goHome;
+  $('#navHome').onclick = goHome;
+  $('#navHomeM').onclick = goHome;
+  $('#navAdmin').onclick = openAdminTab;
+  $('#navAdminM').onclick = openAdminTab;
+  $('#burgerBtn').onclick = () => $('#navLinks').classList.toggle('hidden');
+
+  /* Oʻquvchi kirishi */
+  $('#btnJoin').onclick = joinGame;
+  $('#inpPin').addEventListener('input', e => { e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6); });
+  $('#inpPin').addEventListener('keydown', e => { if (e.key === 'Enter') $('#inpName').focus(); });
+  $('#inpName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#inpGroup').focus(); });
+  $('#inpGroup').addEventListener('keydown', e => { if (e.key === 'Enter') joinGame(); });
+
+  /* Admin */
+  $('#btnAdminLogin').onclick = tryAdminLogin;
+  $('#adminPass').addEventListener('keydown', e => { if (e.key === 'Enter') tryAdminLogin(); });
+  $('#btnAdminLogout').onclick = () => { store.sdel('tq_admin'); showView('home'); toast('info', 'Admin paneldan chiqdingiz'); };
+
+  /* Host */
+  $('#btnStartGame').onclick = startGame;
+  $('#btnBackToAdmin').onclick = () => goAdmin();
+
+  /* Modal tugmalari */
+  $('#btnBulkOpen').onclick = openBulkModal;
+  $('#btnBulkCheck').onclick = previewBulk;
+  $('#btnBulkUpload').onclick = uploadBulk;
+  $('#btnBulkSample').onclick = fillSampleJson;
+  $('#bulkSubject').onchange = () => $('#bulkNewWrap').classList.toggle('hidden', $('#bulkSubject').value !== '__new__');
+  $('#btnAddQOpen').onclick = () => { refreshSelects(); openModal('modal-addq'); };
+  $('#btnSaveQuestion').onclick = saveQuestion;
+  $('#btnLiveOpen').onclick = () => openLiveModal(null);
+  $('#liveSubject').onchange = updateLiveCounts;
+  $('#btnOpenRoom').onclick = () => createRoom($('#liveSubject').value, $('#liveCount').value);
+  $('#btnCreateSubject').onclick = createSubject;
+  $('#cfOk').onclick = () => { closeModal('modal-confirm'); const r = confirmResolve; confirmResolve = null; if (r) r(true); };
+  $('#cfCancel').onclick = () => { closeModal('modal-confirm'); const r = confirmResolve; confirmResolve = null; if (r) r(false); };
+  $$('[data-close]').forEach(b => { b.onclick = () => closeModal(b.dataset.close); });
+
+  /* Escape — modallarni yopish */
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      ['modal-adminlogin', 'modal-bulk', 'modal-addq', 'modal-live', 'modal-viewq', 'modal-newsubject', 'modal-alert'].forEach(id => closeModal(id));
+      if (confirmResolve) { closeModal('modal-confirm'); const r = confirmResolve; confirmResolve = null; r(false); }
+    }
+  });
+
+  /* Sahifa yangilanganda oʻquvchini avtomatik qayta ulash */
+  tryRejoin();
+}
+
+init();
+</script>
+</body>
+</html>
