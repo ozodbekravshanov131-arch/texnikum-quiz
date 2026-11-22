@@ -165,6 +165,14 @@
         <div class="flex flex-wrap items-center justify-between gap-3 mb-5">
           <button id="btnBackToAdmin" class="px-4 py-2.5 rounded-xl bg-white font-bold text-emerald-800 border border-emerald-200 hover:bg-emerald-50 transition-colors shadow-sm">← Panelga qaytish</button>
           <div class="font-bold text-gray-600">Fan: <span id="lobbySubject" class="text-emerald-800"></span></div>
+          <div id="lobbyMusicWrap" class="flex items-center gap-2 flex-wrap">
+            <button id="lobbyMusicBtn" type="button" class="px-4 py-2.5 rounded-xl bg-[#10B981] text-white font-black text-sm hover:bg-emerald-500 transition-colors shadow-sm" aria-label="Musiqani yoqish / oʻchirish" title="Musiqani yoqish / oʻchirish">🎵 Musiqa: Yoqilgan</button>
+            <span id="lobbyVolWrap" class="inline-flex items-center">
+              <label for="lobbyVolume" class="sr-only">Ovoz balandligi</label>
+              <input id="lobbyVolume" type="range" min="0" max="100" step="1" value="40" aria-label="Ovoz balandligi" title="Ovoz balandligi" class="w-24 accent-emerald-600 cursor-pointer">
+            </span>
+            <span id="lobbyMusicMissing" class="hidden text-xs font-bold text-gray-400">Musiqa fayli topilmadi</span>
+          </div>
         </div>
         <div class="rounded-3xl bg-gradient-to-br from-[#065F46] to-[#10B981] p-8 md:p-10 text-center text-white shadow-2xl">
           <div class="text-2xl font-black tracking-wide">Kutish zali</div>
@@ -446,6 +454,9 @@
   <!-- Toastlar -->
   <div id="toastBox" class="fixed bottom-4 right-4 z-[80] flex flex-col gap-2 items-end"></div>
 
+  <!-- Lobby fon musiqasi: faqat admin qurilmasida ijro etiladi, Firebase'ga hech narsa yozilmaydi -->
+  <audio id="lobbyMusic" src="grasswalk.mp3" loop preload="auto"></audio>
+
 <script>
 'use strict';
 
@@ -592,6 +603,143 @@ function getRanking(players) {
   }).sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name));
 }
 
+/* ════════════════ LOBBY FON MUSIQASI (faqat admin brauzerida; Firebase'ga hech narsa yozilmaydi) ════════════════ */
+const LOBBY_MUSIC_SRC = 'grasswalk.mp3';
+let lobbyMusicBroken = false;
+let pendingMusicStart = false;
+let lobbyMusicStatus = null;
+let lobbyMusicGestureArmed = false;
+let lobbyMusicGestureHandler = null;
+
+function updateLobbyMusicBtn() {
+  const btn = $('#lobbyMusicBtn');
+  if (!btn) return;
+  const a = $('#lobbyMusic');
+  const muted = !a || a.muted;
+  btn.textContent = muted ? '🔇 Musiqa: O\u02BCchirilgan' : '🎵 Musiqa: Yoqilgan';
+  btn.className = muted
+    ? 'px-4 py-2.5 rounded-xl bg-gray-200 text-gray-600 font-black text-sm hover:bg-gray-300 transition-colors shadow-sm'
+    : 'px-4 py-2.5 rounded-xl bg-[#10B981] text-white font-black text-sm hover:bg-emerald-500 transition-colors shadow-sm';
+  btn.setAttribute('aria-label', 'Musiqani yoqish / o\u02BCchirish');
+  btn.setAttribute('title', 'Musiqani yoqish / o\u02BCchirish');
+}
+
+/* Saqlangan tanlovlar (ovoz balandligi / oʻchirilgan holat) — qayta ochilganda tiklanadi */
+function applyLobbyMusicPrefs() {
+  const a = $('#lobbyMusic');
+  if (!a || lobbyMusicBroken) return;
+  let v = parseInt(store.get('tq_music_vol') || '40', 10);
+  if (isNaN(v)) v = 40;
+  v = Math.max(0, Math.min(100, v));
+  try { a.volume = v / 100; } catch (e) {}
+  a.muted = store.get('tq_music_muted') === '1';
+  const slider = $('#lobbyVolume');
+  if (slider) slider.value = String(v);
+  updateLobbyMusicBtn();
+}
+
+function isLobbyVisible() {
+  const hz = $('#hzLobby');
+  const view = $('#view-hostzone');
+  return !!(hz && view && !hz.classList.contains('hidden') && !view.classList.contains('hidden'));
+}
+
+function armLobbyMusicGesture() {
+  if (lobbyMusicGestureArmed) return;
+  lobbyMusicGestureArmed = true;
+  lobbyMusicGestureHandler = () => {
+    disarmLobbyMusicGesture();
+    if (!pendingMusicStart || lobbyMusicBroken) return;
+    const a = $('#lobbyMusic');
+    if (!a || a.muted) return;
+    if (lobbyMusicStatus !== 'waiting' || !isLobbyVisible()) return;
+    startLobbyMusic();
+  };
+  document.addEventListener('click', lobbyMusicGestureHandler, { once: true });
+  document.addEventListener('touchstart', lobbyMusicGestureHandler, { once: true });
+  document.addEventListener('keydown', lobbyMusicGestureHandler, { once: true });
+}
+
+function disarmLobbyMusicGesture() {
+  const h = lobbyMusicGestureHandler;
+  lobbyMusicGestureArmed = false;
+  lobbyMusicGestureHandler = null;
+  if (!h) return;
+  document.removeEventListener('click', h);
+  document.removeEventListener('touchstart', h);
+  document.removeEventListener('keydown', h);
+}
+
+function startLobbyMusic() {
+  const a = $('#lobbyMusic');
+  if (!a || lobbyMusicBroken) return;
+  if (!a.paused) { pendingMusicStart = false; disarmLobbyMusicGesture(); return; } /* allaqachon ijro etilmoqda — qayta ishga tushirmaymiz, toʼsqinlik qilmaymiz */
+  pendingMusicStart = false;
+  const pr = a.play();
+  if (pr && typeof pr.catch === 'function') {
+    pr.catch(() => {
+      /* Brauzer autoplay'ni blokladi — xatosiz yutamiz, birinchi foydalanuvchi bosishida qayta urinamiz */
+      pendingMusicStart = true;
+      armLobbyMusicGesture();
+    });
+  }
+}
+
+function stopLobbyMusic() {
+  pendingMusicStart = false;
+  disarmLobbyMusicGesture();
+  const a = $('#lobbyMusic');
+  if (!a || lobbyMusicBroken) return;
+  try { a.pause(); a.currentTime = 0; } catch (e) {}
+}
+
+function syncLobbyMusic(status) {
+  lobbyMusicStatus = (status === undefined || status === null) ? null : String(status);
+  if (lobbyMusicStatus === 'waiting' && isLobbyVisible()) startLobbyMusic();
+  else stopLobbyMusic();
+}
+
+function toggleLobbyMusic() {
+  const a = $('#lobbyMusic');
+  if (!a || lobbyMusicBroken) return;
+  a.muted = !a.muted;
+  store.set('tq_music_muted', a.muted ? '1' : '0');
+  updateLobbyMusicBtn();
+  /* Bu bosish foydalanuvchi jesti hisoblanadi: autoplay bloklangan boʼlsa, shu yerda boshlaymiz */
+  if (!a.muted && lobbyMusicStatus === 'waiting' && isLobbyVisible()) startLobbyMusic();
+}
+
+(function initLobbyMusic() {
+  const a = $('#lobbyMusic');
+  if (!a) return;
+  try { if (a.getAttribute('src') !== LOBBY_MUSIC_SRC) a.src = LOBBY_MUSIC_SRC; } catch (e) {}
+  /* Fayl yoʼq yoki oʼqilmasa — hech narsa buzilmaydi: boshqaruv yashirin boʼladi, oʼyin oddiy ishlaydi */
+  a.addEventListener('error', () => {
+    lobbyMusicBroken = true;
+    pendingMusicStart = false;
+    disarmLobbyMusicGesture();
+    try { a.pause(); } catch (e2) {}
+    const btn = $('#lobbyMusicBtn');
+    if (btn) btn.classList.add('hidden');
+    const wrap = $('#lobbyVolWrap');
+    if (wrap) wrap.classList.add('hidden');
+    const miss = $('#lobbyMusicMissing');
+    if (miss) miss.classList.remove('hidden');
+  }, true);
+  applyLobbyMusicPrefs();
+  const btn = $('#lobbyMusicBtn');
+  if (btn) btn.addEventListener('click', toggleLobbyMusic);
+  const slider = $('#lobbyVolume');
+  if (slider) slider.addEventListener('input', () => {
+    const au = $('#lobbyMusic');
+    if (!au || lobbyMusicBroken) return;
+    const v = Math.max(0, Math.min(100, parseInt(slider.value, 10) || 0));
+    try { au.volume = v / 100; } catch (e2) {}
+    store.set('tq_music_vol', String(v));
+  });
+  window.addEventListener('pagehide', stopLobbyMusic);
+})();
+
 /* ════════════════ ROUTER ════════════════ */
 const ALL_MODALS = ['modal-adminlogin', 'modal-bulk', 'modal-addq', 'modal-live', 'modal-viewq', 'modal-newsubject', 'modal-confirm', 'modal-alert'];
 const myRoomWatchers = [];
@@ -605,6 +753,7 @@ function showView(name) {
   if (S.host.timerId) { clearInterval(S.host.timerId); S.host.timerId = null; }
   if (S.student.timerId) { clearInterval(S.student.timerId); S.student.timerId = null; }
   cancelConfetti();
+  if (name !== 'hostzone') stopLobbyMusic();
   ALL_MODALS.forEach(id => closeModal(id));
   if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
   ['home', 'admin', 'hostzone', 'sgame'].forEach(v => { const el = $('#view-' + v); if (el) el.classList.toggle('hidden', v !== name); });
@@ -949,6 +1098,7 @@ async function generatePin() {
 }
 
 async function createRoom(subjectId, countVal) {
+  stopLobbyMusic();
   const s = S.subjects[subjectId];
   if (!s) { toast('error', 'Fanni tanlang'); return; }
   const total = s.questions ? Object.keys(s.questions).length : 0;
@@ -1089,6 +1239,7 @@ function enterHost() {
   watch(db.ref('rooms/' + S.host.pin), 'value', snap => {
     const room = snap.val();
     if (!room) {
+      stopLobbyMusic();
       toast('error', 'Xona oʻchirildi');
       removeMyRoom(S.host.pin);
       S.host.pin = null;
@@ -1097,7 +1248,7 @@ function enterHost() {
     }
     S.host.room = room;
     routeHost();
-  }, err => toast('error', fbErrMsg(err)));
+  }, err => { stopLobbyMusic(); toast('error', fbErrMsg(err)); });
   ensurePlayersWatcher();
 }
 
@@ -1120,6 +1271,7 @@ function routeHost() {
   $('#hzQuestion').classList.toggle('hidden', st !== 'question');
   $('#hzReveal').classList.toggle('hidden', st !== 'reveal');
   $('#hzFinish').classList.toggle('hidden', st !== 'finished');
+  syncLobbyMusic(st);
   if (st === 'waiting') renderLobby();
   else if (st === 'question') { ensureAnswersWatcher(); renderHostQuestion(); }
   else if (st === 'reveal') { ensureAnswersWatcher(); renderHostReveal(); }
@@ -1163,6 +1315,7 @@ async function kickPlayer(pid) {
 
 function startGame() {
   if (!Object.keys(S.host.players || {}).length) { toast('error', 'Kamida 1 ta oʻquvchi qoʻshilishi kerak'); return; }
+  stopLobbyMusic();
   startQuestion(0);
 }
 
