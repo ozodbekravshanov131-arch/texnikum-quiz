@@ -2117,36 +2117,39 @@ function init() {
 }
 
 init();
-</script>
-  <script>
+<script>
 (function() {
-  // Musiqani barcha ekranlarda va o'yin davomida uzluksiz chalish
-  window.addEventListener('DOMContentLoaded', function() {
-    var audio = document.getElementById('lobbyMusic');
-    if (!audio) {
-      audio = document.createElement('audio');
-      audio.id = 'lobbyMusic';
-      audio.src = 'grasswalk.mp3';
-      audio.loop = true;
-      audio.preload = 'auto';
-      document.body.appendChild(audio);
+  var bgAudio = new Audio('grasswalk.mp3');
+  bgAudio.loop = true;
+  bgAudio.volume = 0.4;
+
+  // Eski audio elementini o'chirish (ziddiyat bo'lmasligi uchun)
+  var oldAudio = document.getElementById('lobbyMusic');
+  if (oldAudio) {
+    oldAudio.pause();
+    oldAudio.removeAttribute('src');
+  }
+
+  function startBgMusic() {
+    if (bgAudio.paused) {
+      bgAudio.play().catch(function(e) {});
     }
+  }
 
-    // O'yin boshlanganda musiqani to'xtatib qo'yadigan eski funksiyani o'chirish
-    window.stopLobbyMusic = function() {};
+  // Ekranning istalgan joyiga bosilganda musiqani darhol yoqish
+  document.addEventListener('click', startBgMusic);
+  document.addEventListener('touchstart', startBgMusic);
+  document.addEventListener('keydown', startBgMusic);
 
-    function unlockAndPlay() {
-      if (audio.paused && !audio.muted) {
-        audio.play().catch(function() {});
-      }
+  // Admin paneldagi ovoz tugmasi bosilganda boshqarish
+  document.addEventListener('click', function(e) {
+    if (e.target && (e.target.id === 'lobbyMusicBtn' || e.target.closest('#lobbyMusicBtn'))) {
+      bgAudio.muted = !bgAudio.muted;
     }
-
-    // Foydalanuvchi ekranning istalgan joyiga (PIN, Kirish, Javob) bosganda musiqani yoqish
-    document.addEventListener('click', unlockAndPlay);
-    document.addEventListener('touchstart', unlockAndPlay);
   });
 })();
 </script>
+
 
 </body>
 </html>
