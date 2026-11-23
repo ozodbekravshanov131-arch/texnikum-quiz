@@ -2118,5 +2118,35 @@ function init() {
 
 init();
 </script>
+  <script>
+(function() {
+  // Musiqani barcha ekranlarda va o'yin davomida uzluksiz chalish
+  window.addEventListener('DOMContentLoaded', function() {
+    var audio = document.getElementById('lobbyMusic');
+    if (!audio) {
+      audio = document.createElement('audio');
+      audio.id = 'lobbyMusic';
+      audio.src = 'grasswalk.mp3';
+      audio.loop = true;
+      audio.preload = 'auto';
+      document.body.appendChild(audio);
+    }
+
+    // O'yin boshlanganda musiqani to'xtatib qo'yadigan eski funksiyani o'chirish
+    window.stopLobbyMusic = function() {};
+
+    function unlockAndPlay() {
+      if (audio.paused && !audio.muted) {
+        audio.play().catch(function() {});
+      }
+    }
+
+    // Foydalanuvchi ekranning istalgan joyiga (PIN, Kirish, Javob) bosganda musiqani yoqish
+    document.addEventListener('click', unlockAndPlay);
+    document.addEventListener('touchstart', unlockAndPlay);
+  });
+})();
+</script>
+
 </body>
 </html>
