@@ -2117,37 +2117,6 @@ function init() {
 }
 
 init();
-<script>
-(function() {
-  var bgAudio = new Audio('grasswalk.mp3');
-  bgAudio.loop = true;
-  bgAudio.volume = 0.4;
-
-  // Eski audio elementini o'chirish (ziddiyat bo'lmasligi uchun)
-  var oldAudio = document.getElementById('lobbyMusic');
-  if (oldAudio) {
-    oldAudio.pause();
-    oldAudio.removeAttribute('src');
-  }
-
-  function startBgMusic() {
-    if (bgAudio.paused) {
-      bgAudio.play().catch(function(e) {});
-    }
-  }
-
-  // Ekranning istalgan joyiga bosilganda musiqani darhol yoqish
-  document.addEventListener('click', startBgMusic);
-  document.addEventListener('touchstart', startBgMusic);
-  document.addEventListener('keydown', startBgMusic);
-
-  // Admin paneldagi ovoz tugmasi bosilganda boshqarish
-  document.addEventListener('click', function(e) {
-    if (e.target && (e.target.id === 'lobbyMusicBtn' || e.target.closest('#lobbyMusicBtn'))) {
-      bgAudio.muted = !bgAudio.muted;
-    }
-  });
-})();
 </script>
 </body>
 </html>
